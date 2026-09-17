@@ -123,6 +123,7 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_
 #else
     const ggml_tensor * Q    = dst->src[0];
     const ggml_tensor * K    = dst->src[1];
+    const ggml_tensor * V    = dst->src[2];
     const ggml_tensor * mask = dst->src[3];
 
     float max_bias = 0.0f;
@@ -134,10 +135,18 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_
 
     const int64_t n_gather = (ncols1 == 1 ? Q->ne[1] : ncols1) * (int64_t) n_kv_max;
 
+    // Experimental: on SM86 (RTX 3060 / 3070 / 3080 / 3090, cc == 860) the qwen4
+    // DKQ=DV=256 / ncols1=8 prefill sparse gather engages too early and regresses
+    // wall time. Raise the crossover factor for that exact specialisation only.
+    // No other architecture, decode path, or FA shape is affected.
+    const bool sm86_qwen4_prefill = cc == 860 &&
+        Q->ne[0] == 256 && V->ne[0] == 256 && ncols1 == 8;
+    const int64_t sparse_factor = sm86_qwen4_prefill ? 4 : 2;
+
     return GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) &&
         mask != nullptr && n_kv_max > 0 && max_bias == 0.0f && logit_softcap == 0.0f &&
         mask->ne[0] == K->ne[1] && mask->ne[1] >= Q->ne[1] && mask->ne[2] == 1 &&
-        K->ne[1] >= std::max<int64_t>(4096, 2*n_gather);
+        K->ne[1] >= std::max<int64_t>(4096, sparse_factor*n_gather);
 #endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 }
 
