@@ -27,7 +27,10 @@ stays outside the loop. Each chunk computes:
 1. a `q_c` view into the per-token query tensor,
 2. a `bias_c` view into the per-token bias (block-level or cell-level depending
    on the `blk_bias` branch),
-3. optionally a `mask_c` view into the kq mask (only when `blk_bias` is true),
+3. optionally a `mask_c` view into the kq mask (only when `blk_bias` is true).
+   When the source KQ mask is F16 (flash attention), the cast to F32 is taken
+   on the chunk slice, not on the full mask, so a chunked execution does not
+   materialise a full-token F32 mask cast before taking the slice.
 4. the score GEMM, the head reduction, the block-bias add, the per-cell
    expansion, the cell-bias / mask add, and the top-k,
 5. concat the chunk's top-k onto the running accumulator along the token axis.
@@ -45,11 +48,17 @@ In the unchunked path the dominant scratch tensors are:
 
 - the per-token query `q` (`[idx_dim, n_idx_h, n_tokens]` F32),
 - the mul_mat output `score` (`[n_blocks, n_idx_h, n_tps, n_stream]` F32),
-- the per-cell `expanded` (`[n_kv, n_tps, n_stream]` F32).
+- the head-reduction accumulator `summed` (`[n_blocks, n_tps, n_stream]` F32),
+- the per-cell `expanded` (`[n_kv, n_tps, n_stream]` F32),
+- the second `cont(permute(expanded))` (`[n_kv, n_tps, n_stream, 1]` F32),
+- the cell-bias / mask add output (`[n_kv, n_tps, n_stream, 1]` F32),
+- the optional F32 cast of the KQ mask (`[n_kv, n_tps, n_stream]` F32, only when
+  flash attention keeps the KQ mask in F16).
 
-`expanded` is the largest and scales as `n_kv * n_tokens` F32 per device. At
-large prefill depths (`n_kv ~= n_tokens`) it grows quadratically, capping the
-usable ubatch before either the model's allocator or the device's VRAM budget
+The three `[n_kv, _, n_stream]` F32 tensors in the expanded family all scale
+linearly with `n_tokens` and dominate the per-device scratch at large prefill
+depths. They scale together (each at `n_kv * n_tokens` F32) and together cap
+the usable ubatch before either the allocator or the device's VRAM budget
 gives up.
 
 No reduction in this path crosses tokens: each token's top-k depends only on
@@ -84,19 +93,36 @@ in order.
 ## Chunk-size behaviour
 
 ```text
-idx_bytes_per_step = n_kv * n_stream * sizeof(float)
+idx_overhead       = 2 + (blk_bias && kq_mask is not F32 ? 1 : 0)
+idx_bytes_per_step = idx_overhead * n_kv * n_stream * sizeof(float)
 idx_scratch_target = 2 GiB
 idx_chunk          = clamp(idx_scratch_target / idx_bytes_per_step, 1, n_tps)
 ```
 
-The target matches the GLM5 reference. `n_stream` is in the divisor because
-one chunk step covers `nc * n_stream` tokens.
+The overhead counts the largest simultaneously alive F32 tensors in this
+path. Three copies of `[n_kv, nc, n_stream]` F32 coexist at the final
+bias/mask add: the permute+cont output, the bias/mask input, and the add
+output. The mask input is an F32 cast only when `blk_bias` is set and the
+source KQ mask is not already F32 (flash attention keeps the KQ mask in
+F16). The head-reduction and `score` temporaries are smaller (`[n_blocks,
+nc, n_stream]` and `[n_blocks, n_idx_h, nc, n_stream]` F32 respectively)
+and do not overlap the expanded tensors in lifetime, so they don't add to
+the per-chunk peak. `n_stream` is in the divisor because one chunk step
+covers `nc * n_stream` tokens.
 
 Short contexts where the per-token scratch already fits the target come out
 unchunked (`idx_chunk == n_tps`, single iteration) and take the previous code
-path unchanged. Long contexts at production scale (n_kv on the order of 2^18
-with n_stream == 2) hit the `clamp` at ~1024 tokens per chunk per stream,
-giving ~128 chunks at the upper end of n_ctx_train.
+path unchanged. For the `n_kv = 131072, n_stream = 2, blk_bias F16`
+example (the case the prior version of this doc stated gave ~1024):
+
+- `idx_overhead = 3`
+- `idx_bytes_per_step = 3 * 131072 * 2 * 4 B = 3 MiB`
+- `idx_chunk = clamp(2 GiB / 3 MiB, 1, n_tps) = clamp(~682, 1, n_tps) = 682`
+
+For non-`blk_bias` (or F32 mask) at the same `n_kv` and `n_stream`:
+
+- `idx_overhead = 2`
+- `idx_chunk = clamp(2 GiB / 2 MiB, 1, n_tps) = 1024`
 
 The final chunk can be partial: `nc = min(idx_chunk, n_tps - t0)`. The same
 ops run with the smaller `nc`, the top-k concatenates onto the accumulator,
