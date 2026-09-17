@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <atomic>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -2636,6 +2637,13 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         GGML_ASSERT(n_kv_max >= 0 && n_kv_max <= INT32_MAX);
         ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<int32_t>(n_kv_max));
+        if (n_kv_max > 0) {
+            // one-shot so benchmarking can confirm sparse FA is wired up; verbose-only
+            static std::atomic<int> logged_count{0};
+            if (logged_count.fetch_add(1, std::memory_order_relaxed) == 0) {
+                LLAMA_LOG_DEBUG("sparse flash attention: n_kv_max=%d set on flash_attn_ext op\n", (int) n_kv_max);
+            }
+        }
         ggml_prec_set_acc(cur, GGML_PREC_F32);
 
         if (v_mla) {
