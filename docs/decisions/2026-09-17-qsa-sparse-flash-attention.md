@@ -66,6 +66,23 @@ the model's GGUF metadata says, and is logged at the kernel-selection point
 - The kernel selector excludes the vec path when a GQA-sparse decode applies,
   so the sparse gather cannot be silently substituted by the vec kernel.
 
+### Rejected experiment: SM86-specific factor-4 crossover
+
+A later attempt (commit `cd0868db6`, since reverted) raised the
+`shall_use_sparse` threshold factor from `2` to `4` for the SM86 (cc `== 860`)
+qwen4 prefill specialisation (`DKQ == DV == 256`, `ncols1 == 8`). The
+motivation was to keep sparse FA off at mid-context where it regressed on
+SM86. That experiment was rejected:
+
+- Task-1 controls at d49152 measured ~211–213 t/s on Maya.
+- Original Task-2 sparse FA at d49152 measured ~235.8 t/s on Maya.
+
+Sparse FA is net beneficial at that depth even on SM86, so the relaxed
+factor-4 crossover (which would have kept sparse off at d49152) was the
+wrong direction. The Task-2 implementation keeps the original factor-2
+threshold and lets the dense fallback handle only the very shallow
+contexts where the selector already rejects sparse.
+
 ### Tests
 
 `tests/test-backend-ops.cpp` gains three `test_flash_attn_ext` cases for
