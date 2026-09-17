@@ -4,6 +4,8 @@
 #include "fattn-common.cuh"
 #include "fattn-swizzle.cuh"
 
+#include <atomic>
+
 using namespace ggml_cuda_mma;
 
 // Config options for the MMA kernel.
@@ -2031,6 +2033,17 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
                 constexpr bool use_sparse_kernel = true;
                 fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
                 use_sparse = true;
+
+                // one-shot verbose log per specialisation, so a benchmark can confirm the sparse kernel was actually picked
+                static std::atomic<int> sparse_selected_logged{0};
+                if (sparse_selected_logged.fetch_add(1, std::memory_order_relaxed) == 0) {
+                    const ggml_tensor * Q_sel = dst->src[0];
+                    const ggml_tensor * K_sel = dst->src[1];
+                    const int32_t n_kv_max_sel = ggml_get_op_params_i32(dst, 4);
+                    GGML_LOG_DEBUG("sparse flash attention: device=%d cc=%d.%d DKQ=%d DV=%d ncols1=%d ncols2=%d Q_tokens=%lld K_len=%lld n_kv_max=%d sparse=true\n",
+                            id, cc / 100, (cc / 10) % 10, DKQ, DV, ncols1, ncols2,
+                            (long long) Q_sel->ne[1], (long long) K_sel->ne[1], n_kv_max_sel);
+                }
 
                 static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
                 if (!shared_memory_limit_raised[id]) {

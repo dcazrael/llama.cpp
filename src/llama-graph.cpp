@@ -2638,10 +2638,13 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         GGML_ASSERT(n_kv_max >= 0 && n_kv_max <= INT32_MAX);
         ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<int32_t>(n_kv_max));
         if (n_kv_max > 0) {
-            // one-shot so benchmarking can confirm sparse FA is wired up; verbose-only
-            static std::atomic<int> logged_count{0};
-            if (logged_count.fetch_add(1, std::memory_order_relaxed) == 0) {
-                LLAMA_LOG_DEBUG("sparse flash attention: n_kv_max=%d set on flash_attn_ext op\n", (int) n_kv_max);
+            // confirms the model-side wiring passed n_kv_max to the op; it is NOT proof
+            // that the backend actually selected the sparse kernel (that decision lives
+            // inside the backend, e.g. ggml_cuda_flash_attn_ext_mma_f16_case). The CUDA
+            // backend logs its own line under the same flag when sparse FA is engaged.
+            static std::atomic<int> wired_count{0};
+            if (wired_count.fetch_add(1, std::memory_order_relaxed) == 0) {
+                LLAMA_LOG_DEBUG("flash_attn_ext op received n_kv_max=%d from the model\n", (int) n_kv_max);
             }
         }
         ggml_prec_set_acc(cur, GGML_PREC_F32);
