@@ -400,7 +400,7 @@ static const cmd_params cmd_params_defaults = {
     /* n_gpu_layers         */ { -1 },
     /* n_cpu_moe            */ { 0 },
     /* n_moe_cache_slots    */ { 0 },
-    /* n_moe_cache_inserts  */ { 0 },
+    /* n_moe_cache_inserts  */ { 2 },
     /* split_mode           */ { LLAMA_SPLIT_MODE_LAYER },
     /* load_mode            */ { LLAMA_LOAD_MODE_AUTO },
     /* lazy_mode            */ { LLAMA_LAZY_MODE_AUTO },

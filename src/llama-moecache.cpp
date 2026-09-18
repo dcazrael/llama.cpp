@@ -338,6 +338,10 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const moe_cache * mc, const
 }
 
 void llama_moe_cache_step(moe_cache * mc) {
+    if (!mc) {
+        return;
+    }
+
     moe_cache_impl * imp = impl(mc);
     // 1) publish completed uploads (sync point: synchronize was called before step)
     {
