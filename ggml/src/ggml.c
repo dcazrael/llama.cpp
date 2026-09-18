@@ -250,10 +250,11 @@ GGML_API ggml_abort_callback_t ggml_set_abort_callback(ggml_abort_callback_t cal
     return ret_val;
 }
 
-// Global static — the callback function pointer, but context data is
-// attached to the observed tensor's extra field, so no TLS or per-thread
-// registration is needed. Each context sets the extra pointer during
-// creation; execution is serialized so concurrent overwrite is impossible.
+// Global static callback function pointer.  The callback is stateless —
+// each invocation receives the per-op host_table tensor as userdata, from
+// which the correct cache instance is read via host_table->extra.  This
+// avoids TLS, per-thread registration, and global-ud conflicts between
+// concurrent contexts.
 static ggml_moe_obs_cb_t g_moe_obs_cb = NULL;
 static void *             g_moe_obs_ud = NULL;
 

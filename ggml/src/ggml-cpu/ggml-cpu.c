@@ -1671,10 +1671,11 @@ static void ggml_compute_forward_mul_mat_id(
 
         // MoE routing observation for the llama expert cache
         {
-            void * moe_obs_ud = NULL;
-            ggml_moe_obs_cb_t moe_obs_cb = ggml_get_moe_obs_callback(&moe_obs_ud);
-            if (moe_obs_cb && strstr(src0->name, "ffn_gate_exps")) {
-                moe_obs_cb(src0->name, ids, moe_obs_ud);
+            ggml_moe_obs_cb_t moe_obs_cb = ggml_get_moe_obs_callback(NULL);
+            if (moe_obs_cb && dst->src[3] && strstr(src0->name, "ffn_gate_exps")) {
+                // pass the per-op host_table tensor so the callback can
+                // identify the cache from host_table->extra
+                moe_obs_cb(src0->name, ids, (void *) dst->src[3]);
             }
         }
     }

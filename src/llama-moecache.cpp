@@ -68,20 +68,14 @@ struct moe_cache_impl {
 };
 
 void moe_obs_cb(const char * name, const struct ggml_tensor * ids, void * ud) {
-    // context data is attached to the model tensor's extra field;
-    // ud is a legacy parameter, cache is read from src0->extra below
-    (void) ud;
-    const moe_cache_impl * mc_raw = nullptr;
-
-    // "blk.<il>.ffn_gate_exps.weight" — read cache from the model
-    // tensor's extra field set during llama_moe_cache_create()
-    if (ids && ids->extra) {
-        mc_raw = static_cast<const moe_cache_impl *>(ids->extra);
-    }
-    if (!mc_raw) {
+    // ud is the per-op host_table tensor (dst->src[3]); cache pointer is
+    // attached to host_table->extra during llama_moe_cache_create().
+    // This makes the callback fully stateless — no TLS, no global userdata.
+    ggml_tensor * host_table = (ggml_tensor *) ud;
+    if (!host_table || !host_table->extra) {
         return;
     }
-    moe_cache_impl * mc = const_cast<moe_cache_impl *>(mc_raw);
+    moe_cache_impl * mc = (moe_cache_impl *) host_table->extra;
 
     const int64_t n_ids    = ids->ne[0];
     const int64_t n_tokens = ids->ne[1];
@@ -291,9 +285,9 @@ int llama_moe_cache_create(moe_cache ** out, const llama_model & model, int32_t 
         ggml_backend_tensor_set(ls.pub.host_table, dummy.data(), 0, n_expert*sizeof(int32_t));
 
         mc->by_up_src[ls.pub.up_src] = &ls - mc->layers.data();
-        // attach cache pointer to model tensor so callback can identify it
-        // without relying on thread-local or process-global callback userdata
-        const_cast<ggml_tensor *>(ls.pub.gate_src)->extra = static_cast<void *>(mc);
+        // attach cache pointer to the per-context host_table tensor so the
+        // observation callback can identify the cache from host_table->extra
+        ls.pub.host_table->extra = static_cast<void *>(mc);
         vram += ggml_nbytes(ls.pub.up_c) + ggml_nbytes(ls.pub.gate_c) + ggml_nbytes(ls.pub.down_c);
         LLAMA_LOG_DEBUG("moe-cache: init layer %d '%s' %zu bytes/expert\n",
                 ls.pub.il, ls.pub.up_src->name, ls.pub.up_src->nb[2]);
@@ -432,16 +426,17 @@ void llama_moe_cache_destroy(moe_cache * mc) {
         imp->worker.join();
     }
 
-    // detach cache pointer from model tensors so callbacks during
+    // detach cache pointer from host_table tensors so callbacks during
     // post-destroy compute cannot access freed state
     for (auto & ls : imp->layers) {
-        const_cast<ggml_tensor *>(ls.pub.gate_src)->extra = nullptr;
+        ls.pub.host_table->extra = nullptr;
     }
 
     // free device buffers first (so tensors are no longer allocated while contexts are freed)
     for (auto * b : imp->bufs) { ggml_backend_buffer_free(b); }
     for (auto * c : imp->ctxs) { ggml_free(c); }
 
-    ggml_set_moe_obs_callback(nullptr, nullptr);
+    // do NOT clear the global callback — it may still be needed by other
+    // live contexts; per-context state is cleaned up via host_table->extra
     delete imp;
 }
