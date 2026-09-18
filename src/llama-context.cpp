@@ -483,7 +483,12 @@ llama_context::llama_context(
 }
 
 llama_context::~llama_context() {
-    // tear down the MoE expert cache and stop the upload worker thread before freeing anything else
+    // synchronize first so any still-running graph is guaranteed complete
+    // before the cache's device tensors are freed
+    synchronize();
+
+    // tear down the MoE expert cache and stop the upload worker thread
+    // before freeing anything else
     llama_moe_cache_destroy(moe_cache_ptr);
     moe_cache_ptr = nullptr;
 

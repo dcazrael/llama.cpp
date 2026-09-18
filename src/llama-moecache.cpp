@@ -68,7 +68,20 @@ struct moe_cache_impl {
 };
 
 void moe_obs_cb(const char * name, const struct ggml_tensor * ids, void * ud) {
-    moe_cache_impl * mc = reinterpret_cast<moe_cache_impl *>(ud);
+    // context data is attached to the model tensor's extra field;
+    // ud is a legacy parameter, cache is read from src0->extra below
+    (void) ud;
+    const moe_cache_impl * mc_raw = nullptr;
+
+    // "blk.<il>.ffn_gate_exps.weight" — read cache from the model
+    // tensor's extra field set during llama_moe_cache_create()
+    if (ids && ids->extra) {
+        mc_raw = static_cast<const moe_cache_impl *>(ids->extra);
+    }
+    if (!mc_raw) {
+        return;
+    }
+    moe_cache_impl * mc = const_cast<moe_cache_impl *>(mc_raw);
 
     const int64_t n_ids    = ids->ne[0];
     const int64_t n_tokens = ids->ne[1];
@@ -278,6 +291,9 @@ int llama_moe_cache_create(moe_cache ** out, const llama_model & model, int32_t 
         ggml_backend_tensor_set(ls.pub.host_table, dummy.data(), 0, n_expert*sizeof(int32_t));
 
         mc->by_up_src[ls.pub.up_src] = &ls - mc->layers.data();
+        // attach cache pointer to model tensor so callback can identify it
+        // without relying on thread-local or process-global callback userdata
+        const_cast<ggml_tensor *>(ls.pub.gate_src)->extra = static_cast<void *>(mc);
         vram += ggml_nbytes(ls.pub.up_c) + ggml_nbytes(ls.pub.gate_c) + ggml_nbytes(ls.pub.down_c);
         LLAMA_LOG_DEBUG("moe-cache: init layer %d '%s' %zu bytes/expert\n",
                 ls.pub.il, ls.pub.up_src->name, ls.pub.up_src->nb[2]);
@@ -414,6 +430,12 @@ void llama_moe_cache_destroy(moe_cache * mc) {
     imp->wcv.notify_one();
     if (imp->worker.joinable()) {
         imp->worker.join();
+    }
+
+    // detach cache pointer from model tensors so callbacks during
+    // post-destroy compute cannot access freed state
+    for (auto & ls : imp->layers) {
+        const_cast<ggml_tensor *>(ls.pub.gate_src)->extra = nullptr;
     }
 
     // free device buffers first (so tensors are no longer allocated while contexts are freed)
