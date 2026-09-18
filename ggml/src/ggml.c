@@ -250,8 +250,12 @@ GGML_API ggml_abort_callback_t ggml_set_abort_callback(ggml_abort_callback_t cal
     return ret_val;
 }
 
-static ggml_moe_obs_cb_t g_moe_obs_cb = NULL;
-static void *             g_moe_obs_ud = NULL;
+// Thread-local storage so each thread can have its own callback.
+// This prevents simultaneous contexts on different threads from
+// overwriting each other's callback, and ensures destruction only
+// clears the callback on the owning thread.
+_Thread_local static ggml_moe_obs_cb_t g_moe_obs_cb = NULL;
+_Thread_local static void *             g_moe_obs_ud = NULL;
 
 void ggml_set_moe_obs_callback(ggml_moe_obs_cb_t cb, void * ud) {
     g_moe_obs_cb = cb;
