@@ -11,6 +11,8 @@
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
 
+#include "llama-moecache.h"
+
 #include <array>
 #include <map>
 #include <vector>
@@ -397,4 +399,7 @@ private:
     mutable int32_t n_eval   = 0; // number of eval calls
 
     mutable int32_t n_reused = 0; // number of times the previous graph was reused
+
+    // MoE expert cache (host-offloaded experts)
+    moe_cache * moe_cache_ptr = nullptr;
 };

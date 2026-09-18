@@ -93,7 +93,7 @@ llama_context::llama_context(
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
 
-    llama_moe_cache_init(model, params.n_moe_cache_slots, params.n_moe_cache_inserts);
+    llama_moe_cache_create(&moe_cache_ptr, model, params.n_moe_cache_slots, params.n_moe_cache_inserts);
 
     t_start_us = model.t_start_us;
     t_load_us  = model.t_load_us;
@@ -484,7 +484,8 @@ llama_context::llama_context(
 
 llama_context::~llama_context() {
     // tear down the MoE expert cache and stop the upload worker thread before freeing anything else
-    llama_moe_cache_free();
+    llama_moe_cache_destroy(moe_cache_ptr);
+    moe_cache_ptr = nullptr;
 
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
@@ -2050,10 +2051,14 @@ int llama_context::decode(const llama_batch & batch_inp) {
     }
 
     // wait for the computation to finish (automatically done when obtaining the model output)
-    //synchronize();
+    // synchronize();
 
-    // apply throttled MoE expert-cache updates between graph executions
-    llama_moe_cache_step();
+    // MoE expert cache: synchronize before mutating state so the previous
+    // graph is fully done and cannot still read the cache slots.
+    if (moe_cache_ptr) {
+        synchronize();
+    }
+    llama_moe_cache_step(moe_cache_ptr);
 
     return 0;
 }
@@ -2520,6 +2525,7 @@ llm_graph_params llama_context::graph_params(
         /*.loras       =*/ loras.get(),
         /*.mctx        =*/ mctx,
         /*.cross       =*/ &cross,
+        /*.moe_cache_ptr =*/ moe_cache_ptr,
         /*.samplers    =*/ sampling.samplers,
         /*.n_outputs   =*/ n_outputs,
         /*.cb          =*/ graph_get_cb(),

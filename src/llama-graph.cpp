@@ -1492,6 +1492,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     loras            (params.loras),
     mctx             (params.mctx),
     cross            (params.cross),
+    moe_cache_ptr    (params.moe_cache_ptr),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -2170,7 +2171,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         !up_exps_b && !gate_exps_b && !down_exps_b &&
         !up_exps_s && !gate_exps_s && !down_exps_s &&
         type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
-        mcache = llama_moe_cache_lookup(up_exps);
+        mcache = llama_moe_cache_lookup(moe_cache_ptr, up_exps);
     }
     if (mcache) {
         mc_slot_ids = ggml_get_rows(ctx0, mcache->dev_table, selected_experts); // [1, n_expert_used, 1]
