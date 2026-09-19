@@ -384,8 +384,9 @@ extern "C" {
         float    defrag_thold;     // [DEPRECATED] defragment the KV cache if holes/size > thold, <= 0 disabled (default)
 
         // GPU-resident LRU cache for host-offloaded MoE expert weights
-        int32_t  n_moe_cache_slots;   // cache slots per host-resident expert layer (0 = disabled)
-        int32_t  n_moe_cache_inserts; // max expert uploads per layer per decode step
+        int32_t  n_moe_cache_slots;    // cache slots per host-resident expert layer (0 = disabled)
+        int32_t  n_moe_cache_inserts;  // max expert uploads per layer per decode step
+        int32_t  n_moe_cache_admit;    // recent-use sightings required before an uncached expert is uploaded (1 = unconditional)
 
         ggml_backend_sched_eval_callback cb_eval;
         void * cb_eval_user_data;
