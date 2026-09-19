@@ -36,6 +36,12 @@ struct layer_state {
 
     std::vector<bool>     slot_in_flight; // slot has an upload pending
 
+    // per-expert upload-in-flight flag; set when an upload is scheduled,
+    // cleared when the upload is published (or abandoned). Prevents an
+    // expert whose upload is queued from being queued again by a later
+    // observation while it is still in flight.
+    std::vector<bool>     expert_in_flight;
+
     // per-expert recent-use counter, incremented on uncached observation,
     // halved every k_admit_age_window decode steps
     std::vector<uint8_t>  expert_use_count;
@@ -140,8 +146,10 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, void * ud) {
                 if (c < UINT8_MAX) {
                     c++;
                 }
-                if ((int32_t) c >= threshold) {
-                    // cross-check dedup against pending
+                // only enqueue if the expert crossed the admission
+                // threshold, isn't already pending, and isn't already on
+                // its way to the device
+                if ((int32_t) c >= threshold && !ls->expert_in_flight[id]) {
                     bool dup = false;
                     for (int32_t p : ls->pending) {
                         if (p == id) { dup = true; break; }
@@ -317,6 +325,7 @@ int llama_moe_cache_create(moe_cache ** out, const llama_model & model, int32_t 
         ls.expert_slot.assign(n_expert, -1);
         ls.slot_last_use.assign(n_slots, 0);
         ls.slot_in_flight.assign(n_slots, false);
+        ls.expert_in_flight.assign(n_expert, false);
         ls.expert_use_count.assign(n_expert, 0);
         ls.expert_bytes = ls.pub.up_src->nb[2] +
                           ls.pub.gate_src->nb[2] +
@@ -391,10 +400,11 @@ void llama_moe_cache_step(moe_cache * mc) {
         std::lock_guard<std::mutex> lk(imp->mtx);
         for (const auto & j : imp->done) {
             auto & ls = imp->layers[j.layer_idx];
-            ls.slot_expert[j.slot]     = j.expert;
-            ls.expert_slot[j.expert]   = j.slot;
-            ls.slot_last_use[j.slot]   = ++imp->clock;
-            ls.slot_in_flight[j.slot]  = false;
+            ls.slot_expert[j.slot]        = j.expert;
+            ls.expert_slot[j.expert]      = j.slot;
+            ls.slot_last_use[j.slot]      = ++imp->clock;
+            ls.slot_in_flight[j.slot]     = false;
+            ls.expert_in_flight[j.expert] = false;
             set_table_entry(ls.pub, j.expert, j.slot);
             imp->n_upload++;
             imp->bytes_uploaded += ls.expert_bytes;
@@ -441,7 +451,10 @@ void llama_moe_cache_step(moe_cache * mc) {
                 set_table_entry(ls.pub, victim, imp->n_slots);
                 imp->n_evict++;
             }
-            ls.slot_in_flight[slot] = true;
+            ls.slot_in_flight[slot]     = true;
+            // mark the expert itself as in flight so subsequent observations
+            // don't re-queue it while the upload is still pending
+            ls.expert_in_flight[id]     = true;
 
             std::lock_guard<std::mutex> wlk(imp->wmtx);
             imp->todo.push_back({li, id, slot});
@@ -519,14 +532,10 @@ void llama_moe_cache_destroy(moe_cache * mc) {
     }
     moe_cache_impl * imp = impl(mc);
 
-    // log final cache telemetry before tearing down state so the final
-    // values are visible after the benchmark/context ends
-    {
-        std::lock_guard<std::mutex> lock(imp->mtx);
-        log_cache_telemetry("final", imp);
-    }
-
-    // signal the worker to stop
+    // signal the worker to stop and wait for it to drain any in-progress
+    // upload. After the join, todo holds jobs the worker abandoned
+    // (never started) and done holds jobs the worker completed but
+    // step() never published.
     {
         std::lock_guard<std::mutex> lk(imp->wmtx);
         imp->stop = true;
@@ -534,6 +543,34 @@ void llama_moe_cache_destroy(moe_cache * mc) {
     imp->wcv.notify_one();
     if (imp->worker.joinable()) {
         imp->worker.join();
+    }
+
+    // publish any uploads the worker finished after the last step(), and
+    // clear in-flight flags on abandoned todo jobs so the final
+    // telemetry reflects everything that actually completed before
+    // destruction (abandoned jobs are not counted as uploads).
+    {
+        std::lock_guard<std::mutex> wlk(imp->wmtx);
+        std::lock_guard<std::mutex> lk(imp->mtx);
+        for (const auto & j : imp->done) {
+            auto & ls = imp->layers[j.layer_idx];
+            ls.slot_expert[j.slot]        = j.expert;
+            ls.expert_slot[j.expert]      = j.slot;
+            ls.slot_last_use[j.slot]      = ++imp->clock;
+            ls.slot_in_flight[j.slot]     = false;
+            ls.expert_in_flight[j.expert] = false;
+            set_table_entry(ls.pub, j.expert, j.slot);
+            imp->n_upload++;
+            imp->bytes_uploaded += ls.expert_bytes;
+        }
+        imp->done.clear();
+
+        for (const auto & j : imp->todo) {
+            imp->layers[j.layer_idx].expert_in_flight[j.expert] = false;
+        }
+        imp->todo.clear();
+
+        log_cache_telemetry("final", imp);
     }
 
     // detach cache pointer from host_table tensors so callbacks during
