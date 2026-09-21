@@ -95,7 +95,7 @@ in order.
 ```text
 idx_overhead       = 2 + (blk_bias && kq_mask is not F32 ? 1 : 0)
 idx_bytes_per_step = idx_overhead * n_kv * n_stream * sizeof(float)
-idx_scratch_target = 512 MiB
+idx_scratch_target = LLAMA_QSA_SCRATCH_MIB (default 512 MiB)
 idx_chunk          = clamp(idx_scratch_target / idx_bytes_per_step, 1, n_tps)
 ```
 
@@ -178,3 +178,22 @@ is an intentionally conservative capacity test: if 128K / ubatch 8192 fits,
 the target can later be tuned upward for prompt-processing throughput. If it
 still OOMs, the next memory wall to address is the dense QSA attention-mask
 materialization in build_attn_qsa(), not a further reduction in ubatch.
+
+
+## LLAMA_QSA_SCRATCH_MIB runtime sweep
+
+The scratch target is runtime-configurable so capacity/performance sweeps do
+not require separate source checkouts or rebuilds:
+
+```text
+LLAMA_QSA_SCRATCH_MIB=<64..4096>
+```
+
+The default remains 512 MiB. The value is parsed once per llama-server process,
+which makes server-suite cells reproducible while allowing one binary to test
+many scratch targets. Invalid values fail explicitly.
+
+The workbench matrix currently probes 512, 256, 128, and 64 MiB across several
+CUDA0/CUDA1 layer splits. If 64 MiB still cannot sustain ~128K active context
+at ubatch 8192, the next optimization target is the dense QSA attention-mask
+materialization rather than further shrinking this indexer scratch bound.
