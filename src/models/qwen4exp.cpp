@@ -23,7 +23,7 @@ static int64_t qwen4exp_qsa_scratch_target_bytes() {
                 "LLAMA_QSA_SCRATCH_MIB must be an integer from 64 to 4096, got '%s'", raw));
         }
 
-        GGML_LOG_INFO("qwen4exp: QSA indexer scratch target = %lld MiB\n", mib);
+        LLAMA_LOG_INFO("qwen4exp: QSA indexer scratch target = %lld MiB\n", mib);
         return (int64_t) mib * 1024 * 1024;
     }();
     return target;
