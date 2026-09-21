@@ -641,7 +641,70 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
             ext_factor, attn_factor, beta_fast, beta_slow);
     cb(q, "indexer_q", il);
 
-    // rectify each head dot product before the sum, as in the DeepSeek lightning indexer
+    // The score ([n_blocks, n_idx_h, n_tps, n_stream] F32 before head reduction) and the per-cell
+    // expanded ([n_kv, n_tps, n_stream] F32) both scale linearly with n_tokens and cap the ubatch
+    // at large context. No reduction in this path crosses tokens, so the loop can be split into
+    // chunks and ggml-alloc reuses one buffer across them, bounding the scratch by the chunk
+    // size. The chunk is sized to keep the per-chunk scratch peak near a fixed target. One step
+    // covers nc*n_stream tokens, so n_stream belongs in the divisor.
+    //
+    // Per-chunk scratch peak is the sum of the largest simultaneously alive F32 tensors in this
+    // path. Three copies of [n_kv, nc, n_stream] F32 coexist at the final bias/mask add: the
+    // permute+cont output, the bias/mask input, and the add output. The mask input is an F32
+    // cast only when blk_bias is set and the source KQ mask is not already F32 (flash attention
+    // keeps the KQ mask in F16). Score/head-sum temporaries are smaller (bounded by
+    // n_blocks*n_idx_h*nc*n_stream and n_blocks*nc*n_stream respectively) and do not overlap
+    // the expanded tensors in lifetime.
+    constexpr int64_t idx_scratch_target = 2ll*1024*1024*1024;
+
+    const int64_t idx_overhead = 2 + ((blk_bias && kq_mask->type != GGML_TYPE_F32) ? 1 : 0);
+    const int64_t idx_bytes_per_step = idx_overhead * n_kv * n_stream * (int64_t) sizeof(float);
+    const int64_t idx_chunk = std::clamp<int64_t>(idx_scratch_target/idx_bytes_per_step, 1, n_tps);
+
+    // the reference returns indexer_top_k + compress_ratio - 1: whole blocks plus the tail
+    const int64_t width = std::min<int64_t>(n_kv, (int64_t) hparams.indexer_top_k + r - 1);
+
+    ggml_tensor * top_k = nullptr;
+
+    for (int64_t t0 = 0; t0 < n_tps; t0 += idx_chunk) {
+        const int64_t nc = std::min<int64_t>(idx_chunk, n_tps - t0);
+
+        // q is [idx_dim, n_idx_h, n_tokens] F32 contiguous. Per-stream rows
+        // [t0*n_idx_h, (t0+nc)*n_idx_h) form a contiguous chunk (head innermost in ne[1]),
+        // with the rest of each stream skipped via ne[2].
+        ggml_tensor * q_c = (nc == n_tps)
+            ? ggml_reshape_3d(ctx0, q, idx_dim, n_idx_h*n_tps, n_stream)
+            : ggml_view_3d(ctx0, q, idx_dim, n_idx_h*nc, n_stream,
+                    q->nb[1], q->nb[2]*n_tps, t0 * n_idx_h * q->nb[1]);
+
+        ggml_tensor * bias_c = (nc == n_tps) ? inp->bias : ggml_view_3d(ctx0, inp->bias,
+                blk_bias ? n_blocks : n_kv, nc, n_stream,
+                inp->bias->nb[1], inp->bias->nb[2], t0 * inp->bias->nb[1]);
+
+        ggml_tensor * mask_c = nullptr;
+        if (blk_bias) {
+            // flash attention keeps the mask in f16; the scores are f32. View the
+            // mask chunk first and cast only that chunk, so a chunked execution does
+            // not materialise the full n_tps-wide F32 cast before taking the slice.
+            if (nc == n_tps) {
+                ggml_tensor * mask = kq_mask->type == GGML_TYPE_F32 ? kq_mask : ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+                if (mask->op == GGML_OP_CPY) {
+                    GGML_ASSERT(mask->ne[1] == n_tps && "QSA unchunked mask cast must cover full n_tps");
+                }
+                mask_c = ggml_reshape_3d(ctx0, mask, n_kv, n_tps, n_stream);
+            } else {
+                ggml_tensor * mask_view = ggml_view_3d(ctx0, kq_mask, n_kv, nc, n_stream,
+                        kq_mask->nb[1], kq_mask->nb[2], t0 * kq_mask->nb[1]);
+                if (kq_mask->type == GGML_TYPE_F32) {
+                    mask_c = mask_view;
+                } else {
+                    mask_c = ggml_reshape_3d(ctx0, ggml_cast(ctx0, mask_view, GGML_TYPE_F32), n_kv, nc, n_stream);
+                    GGML_ASSERT(mask_c->ne[1] == nc && "QSA chunked mask cast must be chunk-local");
+                }
+            }
+        }
+
+        // rectify each head dot product before the sum, as in the DeepSeek lightning indexer
         // mul_mat matches ne[2], so the queries of stream s only meet the blocks of stream s
         ggml_tensor * score = ggml_mul_mat(ctx0, pooled, q_c);
         score = ggml_reshape_4d(ctx0, score, n_blocks, n_idx_h, nc, n_stream);
