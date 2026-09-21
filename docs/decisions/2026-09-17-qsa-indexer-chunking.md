@@ -95,7 +95,7 @@ in order.
 ```text
 idx_overhead       = 2 + (blk_bias && kq_mask is not F32 ? 1 : 0)
 idx_bytes_per_step = idx_overhead * n_kv * n_stream * sizeof(float)
-idx_scratch_target = 2 GiB
+idx_scratch_target = 512 MiB
 idx_chunk          = clamp(idx_scratch_target / idx_bytes_per_step, 1, n_tps)
 ```
 
@@ -117,12 +117,12 @@ example (the case the prior version of this doc stated gave ~1024):
 
 - `idx_overhead = 3`
 - `idx_bytes_per_step = 3 * 131072 * 2 * 4 B = 3 MiB`
-- `idx_chunk = clamp(2 GiB / 3 MiB, 1, n_tps) = clamp(~682, 1, n_tps) = 682`
+- `idx_chunk = clamp(512 MiB / 3 MiB, 1, n_tps) = clamp(~170, 1, n_tps) = 170`
 
 For non-`blk_bias` (or F32 mask) at the same `n_kv` and `n_stream`:
 
 - `idx_overhead = 2`
-- `idx_chunk = clamp(2 GiB / 2 MiB, 1, n_tps) = 1024`
+- `idx_chunk = clamp(512 MiB / 2 MiB, 1, n_tps) = 256`
 
 The final chunk can be partial: `nc = min(idx_chunk, n_tps - t0)`. The same
 ops run with the smaller `nc`, the top-k concatenates onto the accumulator,
@@ -163,3 +163,18 @@ and the output shape is identical to the unchunked case
    and a moderately chunked path is exercised at a smaller scratch target.
    Both produce bit-identical logits to the unchunked graph at matched
    ubatch.
+
+## Maya deep-context tuning update (2026-09-22)
+
+The initial 2 GiB target was too permissive for the dual RTX 3060 daily-driver
+configuration. At 128K context / ubatch 8192 the full prompt-processing graph
+still requested multi-GiB device-local workspaces and OOMed on CUDA0. A
+50/50 -> 45/55 CUDA0/CUDA1 split reduced the failed CUDA0 workspace request
+from about 8.54 GiB to 7.71 GiB, proving placement helps, but not enough by
+itself.
+
+The target is therefore reduced to 512 MiB for the next validation pass. This
+is an intentionally conservative capacity test: if 128K / ubatch 8192 fits,
+the target can later be tuned upward for prompt-processing throughput. If it
+still OOMs, the next memory wall to address is the dense QSA attention-mask
+materialization in build_attn_qsa(), not a further reduction in ubatch.
