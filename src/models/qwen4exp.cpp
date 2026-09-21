@@ -6,6 +6,28 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdlib>
+
+static int64_t qwen4exp_qsa_scratch_target_bytes() {
+    static const int64_t target = []() -> int64_t {
+        constexpr int64_t default_mib = 512;
+        const char * raw = std::getenv("LLAMA_QSA_SCRATCH_MIB");
+        if (raw == nullptr || *raw == '\0') {
+            return default_mib * 1024 * 1024;
+        }
+
+        char * end = nullptr;
+        const long long mib = std::strtoll(raw, &end, 10);
+        if (end == raw || *end != '\0' || mib < 64 || mib > 4096) {
+            throw std::runtime_error(format(
+                "LLAMA_QSA_SCRATCH_MIB must be an integer from 64 to 4096, got '%s'", raw));
+        }
+
+        GGML_LOG_INFO("qwen4exp: QSA indexer scratch target = %lld MiB\n", mib);
+        return (int64_t) mib * 1024 * 1024;
+    }();
+    return target;
+}
 
 // bad metadata must be catchable: GGML_ASSERT aborts the whole process
 static void qwen4exp_require_nonzero(const llama_model_loader & ml, llm_kv kid, uint32_t value) {
@@ -887,7 +909,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     // keeps the KQ mask in F16). Score/head-sum temporaries are smaller (bounded by
     // n_blocks*n_idx_h*nc*n_stream and n_blocks*nc*n_stream respectively) and do not overlap
     // the expanded tensors in lifetime.
-    constexpr int64_t idx_scratch_target = 512ll*1024*1024;
+    const int64_t idx_scratch_target = qwen4exp_qsa_scratch_target_bytes();
 
     const int64_t idx_overhead = 2 + ((blk_bias && kq_mask->type != GGML_TYPE_F32) ? 1 : 0);
     const int64_t idx_bytes_per_step = idx_overhead * n_kv * n_stream * (int64_t) sizeof(float);
