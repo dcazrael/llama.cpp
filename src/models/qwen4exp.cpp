@@ -887,7 +887,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     // keeps the KQ mask in F16). Score/head-sum temporaries are smaller (bounded by
     // n_blocks*n_idx_h*nc*n_stream and n_blocks*nc*n_stream respectively) and do not overlap
     // the expanded tensors in lifetime.
-    constexpr int64_t idx_scratch_target = 2ll*1024*1024*1024;
+    constexpr int64_t idx_scratch_target = 512ll*1024*1024;
 
     const int64_t idx_overhead = 2 + ((blk_bias && kq_mask->type != GGML_TYPE_F32) ? 1 : 0);
     const int64_t idx_bytes_per_step = idx_overhead * n_kv * n_stream * (int64_t) sizeof(float);
