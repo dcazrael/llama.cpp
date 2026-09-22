@@ -238,3 +238,24 @@ mask. Sparse Flash Attention still receives a mask and compacts it back into
 indices internally. A direct selected-index FA interface, or an equivalent
 compact gather, remains a separate optimization angle if the 128K/ub8192 target
 still lacks workspace headroom.
+
+
+## Block-first graph-input allocation fix (2026-09-22)
+
+The first block-granular top-k integration still created `cell_blk` for the
+block-bias path even though no graph node consumed it anymore. ggml therefore
+did not allocate a backend buffer for that input. During runtime,
+`set_input_qsa()` called `ggml_backend_buffer_is_host(cell_blk->buffer)`, which
+reached `ggml_backend_buffer_get_usage()` with a null buffer and aborted at
+`ggml-backend.cpp:205: GGML_ASSERT(buffer)`.
+
+The graph-input contract is now explicit:
+
+- `cell_blk` is created only for the fallback token-level selection path,
+- `cell_pos` is created only when device-side causal reconstruction consumes it,
+- `set_input_qsa()` accepts either pointer as null,
+- `n_kv` is derived from the indexer cache instead of `cell_blk`,
+- writes into the optional cell map are guarded.
+
+This keeps the block-first path free of unused n_kv-wide inputs and avoids
+backend-buffer assertions during graph execution.
