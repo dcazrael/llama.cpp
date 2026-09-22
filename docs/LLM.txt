@@ -145,6 +145,62 @@ attention/GDN graph geometry. If a later OOM still occurs, distinguish a
 selected-expert staging peak from the remaining QSA mask/indices allocation
 before changing allocator policy.
 
+LATEST LOCAL-AGENT HANDOFF STATE
+--------------------------------
+Latest pushed target result:
+  llm-workbench/llm-lab/qwen3.8-flash-next/server-suites/
+  2026-09-22T203722Z-qwen38-QSA-chunking-128K-ub8192-ceiling/
+
+Binary/source:
+- branch maya/qwen38-generel-multigpu
+- checkout/binary SHA 6f2e5462721f6e9575d6597f3335b88fc35994e9
+- checkout matches binary
+
+Observed progress before OOM:
+- 8192   tokens: ~489.06 PP tok/s
+- 16384  tokens: ~464.86 PP tok/s
+- 24576  tokens: ~437.89 PP tok/s
+- 32768  tokens: ~416.52 PP tok/s
+- 40960  tokens: ~413.67 PP tok/s
+- 49152  tokens: ~409.62 PP tok/s
+- 57344  tokens: ~405.11 PP tok/s
+- then CUDA1 OOM at ~3:12 server time.
+
+The fatal stack is now specific:
+  ggml_cuda_pool_vmm::alloc
+    -> ggml_cuda_mul_mat_q_impl
+    -> ggml_cuda_mul_mat_id_impl
+    -> ggml_cuda_mul_mat_id_staged
+    -> ggml_cuda_mul_mat_id_cached
+
+The allocator failure is:
+  cuMemCreate(&handle, reserve_size, &prop, 0)
+
+GPU telemetry peaked around:
+- CUDA0 ~10.82 GiB
+- CUDA1 ~11.61 GiB
+CUDA1 remains the display GPU and fails first.
+
+CRITICAL NEW FINDING:
+The bounded cached-MoE MMID path added at 6f2e546 was expected to emit:
+  moe-cache: tiling host-routed prefill MMID tokens=... tile=2048
+The latest server.log contains NO such line.
+
+Therefore the current problem is not "invent another allocator workaround".
+The current problem is:
+- the actual staged cached-MoE MMQ shape that OOMs is bypassing the new tiling
+  predicate/path,
+- the backtrace proves the fatal allocation is inside ggml_cuda_mul_mat_q_impl
+  reached through staged cached MUL_MAT_ID,
+- inspect the real tensor dimensions/host_route form at that call,
+- make bounded internal MMID tiling apply to that real path (or implement an
+  equivalent bounded scratch strategy inside mul_mat_q_impl),
+- keep outer llama ubatch 8192,
+- preserve native-q4 FA, block-first QSA and sparse FA.
+
+Do not spend time tuning VMM growth or adding allocator retries before fixing
+the fact that the intended bounded MMID path did not activate.
+
 BLOCK-FIRST INPUT ALLOCATION GOTCHA
 ----------------------------------
 After block-granular top-k was introduced, the normal block-bias path no longer
