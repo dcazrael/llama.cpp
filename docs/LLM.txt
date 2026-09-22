@@ -108,7 +108,10 @@ Current mitigation:
 - the model-configured cache size remains unchanged (48 in the canonical
   suite), and the runtime cap returns to configured size for decode,
 - changing phase marks the candidate snapshot and scheduler reservation dirty,
-  so backend resources are rebuilt only on the phase transition.
+  so backend resources are rebuilt only on the phase transition,
+- before a growing live-KV workspace is reallocated, idle CUDA transient-pool
+  pages are trimmed after synchronization so the replacement cudaMalloc does
+  not compete with retained scratch mappings.
 
 This is deliberately a residency/workspace change. It does not reduce outer
 ubatch and must not regress the three QSA optimization invariants above.
