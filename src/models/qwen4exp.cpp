@@ -834,7 +834,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_indexer(
     // one sequence at a time: cells of other sequences carry the int32 max sentinel instead of
     // a sequence test. this arch is text-only, so the extra position rows are always zero and
     // the mask's 2d rule at equal positions never fires; a vision encoder would need a revisit
-    dev_causal = blk_bias && ubatch.n_seqs_unq <= 1;
+    dev_causal = blk_bias && cparams.flash_attn && n_stream == 1 && ubatch.n_seqs_unq <= 1;
 
     // nothing above depends on the layer, so the layers sharing a ratio share one input set
     inp = nullptr;
