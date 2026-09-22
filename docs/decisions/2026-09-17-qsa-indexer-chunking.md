@@ -180,20 +180,31 @@ still OOMs, the next memory wall to address is the dense QSA attention-mask
 materialization in build_attn_qsa(), not a further reduction in ubatch.
 
 
-## LLAMA_QSA_SCRATCH_MIB runtime sweep
+## Attention-side QSA chunking (2026-09-22)
 
-The scratch target is runtime-configurable so capacity/performance sweeps do
-not require separate source checkouts or rebuilds:
+The indexer-score chunking experiment proved that bounding only the indexer
+scratch does not control the deep-context peak. On Maya, lowering the score
+scratch target from 512 MiB to 64 MiB left the fatal ~6 GiB-class compute
+workspace essentially unchanged.
 
-```text
-LLAMA_QSA_SCRATCH_MIB=<64..4096>
-```
+The branch now ports the bounded QSA prefill design from upstream experimental
+commit 8a0ad638, with the later causal-selection fix from 4c552387 and the
+Generel sampled-decode behavior preserved.
 
-The default remains 512 MiB. The value is parsed once per llama-server process,
-which makes server-suite cells reproducible while allowing one binary to test
-many scratch targets. Invalid values fail explicitly.
+For single-stream flash-attention QSA, the graph now:
+- builds pooled indexer state once,
+- processes query tokens in adaptive 64..256-token QSA chunks,
+- scores/top-k selects each chunk independently,
+- rebuilds the causal mask from cache cell positions on device,
+- materializes only an [n_kv, n_chunk] mask,
+- runs sparse flash attention for that query chunk,
+- scatters each chunk output back into the outer ubatch output.
 
-The workbench matrix currently probes 512, 256, 128, and 64 MiB across several
-CUDA0/CUDA1 layer splits. If 64 MiB still cannot sustain ~128K active context
-at ubatch 8192, the next optimization target is the dense QSA attention-mask
-materialization rather than further shrinking this indexer scratch bound.
+The outer llama ubatch remains unchanged. The goal is therefore still
+~128K active context with ubatch 8192; only the QSA attention subgraph is
+microbatched internally.
+
+The old LLAMA_QSA_SCRATCH_MIB score-target sweep is retired from the active
+path. If the 128K/ub8192 target still OOMs after this change, investigate the
+next device-local peak (notably quantized-K/V F16 staging in flash attention)
+rather than returning to score-scratch tuning or low-ubatch boundary mapping.
