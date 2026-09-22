@@ -2014,6 +2014,12 @@ static bool ggml_cuda_mul_mat_id_impl(
             ne2 == ne12 && ids->type == GGML_TYPE_I32 &&
             ids->ne[1] == ne12 && ids->ne[2] == 1 && ids->ne[3] == 1 &&
             host_route->data != nullptr) {
+        static std::once_flag moe_prefill_tile_log_once;
+        std::call_once(moe_prefill_tile_log_once, [&]() {
+            GGML_LOG_INFO("moe-cache: tiling host-routed prefill MMID tokens=%" PRId64 " tile=%" PRId64 "\n",
+                    ne12, moe_prefill_tile_tokens);
+        });
+
         for (int64_t token0 = 0; token0 < ne12; token0 += moe_prefill_tile_tokens) {
             const int64_t n_tile = std::min<int64_t>(moe_prefill_tile_tokens, ne12 - token0);
 
