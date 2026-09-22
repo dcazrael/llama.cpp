@@ -728,8 +728,12 @@ public:
     bool can_decode_sampled() const override { return true; }
 
     void set_input(const llama_ubatch * ubatch) override {
-        mctx->get_idx()->set_input_k_idxs(k_idxs, ubatch);
-        mctx->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, cell_pos, extra_cells, ubatch, ratio, blk_bias);
+        const auto * idx = mctx->get_idx();
+        GGML_ASSERT(idx != nullptr);
+
+        idx->set_input_k_idxs(k_idxs, ubatch);
+        mctx->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, cell_pos, extra_cells,
+                ubatch, idx->get_n_kv(), ratio, blk_bias);
     }
 
     bool can_reuse(const llm_graph_params & params) override {
