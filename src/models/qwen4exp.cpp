@@ -733,7 +733,7 @@ public:
 
         idx->set_input_k_idxs(k_idxs, ubatch);
         mctx->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, cell_pos, extra_cells,
-                ubatch, idx->get_n_kv(), ratio, blk_bias);
+                ubatch, ratio, blk_bias);
     }
 
     bool can_reuse(const llm_graph_params & params) override {
