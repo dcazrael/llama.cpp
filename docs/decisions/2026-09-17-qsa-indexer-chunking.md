@@ -305,3 +305,33 @@ mappings from competing with the new multi-GiB scheduler backing.
 This does not change the outer ubatch, native-q4 FA, block-first QSA selection,
 or sparse FA. The residual [n_kv, n_chunk] F16 sparse-attention mask remains a
 separate deeper optimization if this headroom is still insufficient.
+
+
+## Bounded cached-MoE prefill execution (2026-09-22)
+
+After the scheduler headroom fixes, the next target attempt surfaced a CUDA VMM
+allocation failure at `cuMemCreate()`. The allocator call is only where physical
+VRAM exhaustion becomes visible. The cached MoE path still contains
+token-proportional transient buffers, so further allocator-specific retry logic
+would leave the underlying peak unchanged.
+
+The CUDA MMID implementation now bounds host-routed cached-expert prefill:
+- outer llama ubatch remains unchanged,
+- MMID operations above 2048 tokens are sliced into 2048-token tensor views,
+- the already staged expert set, expert map, wait classes and stage-ready state
+  are reused across slices,
+- each slice writes directly into the matching destination rows,
+- recursive dispatch reaches the existing MMQ/generic implementation with a
+  bounded token count,
+- ordinary MMID operations without a host-routed cached-expert source are
+  unchanged.
+
+The generic MMID sorted-input/output workspaces scale linearly with token count,
+as do MMQ activation-quantization temporaries. At outer ubatch 8192, the new
+bound cuts those token-proportional peaks to at most one quarter of their
+previous per-operation size while preserving the large outer graph for
+attention and GDN.
+
+The remaining independent deep-context target is still a direct sparse-index
+Flash Attention interface that removes the residual [n_kv, n_chunk] F16 mask
+and mask-to-indices rescan.
