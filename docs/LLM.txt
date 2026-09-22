@@ -118,6 +118,19 @@ ubatch and must not regress the three QSA optimization invariants above.
 
 BOUNDED MOE PREFILL EXECUTION
 -----------------------------
+Compact staged FP4 MMQ must supply a host route containing its remapped IDs,
+with a null expert_map because staged weights already use compact expert IDs.
+It previously passed host_route=nullptr and bypassed the 2048-token tiling
+guard. Keep the remapped ID vector alive until all tiles have been dispatched.
+The tile diagnostic includes src1/ids/dst dimensions and mapped-source status.
+The existing FP4 overflow regression uses 2051 tokens to cover a full tile and
+a partial tail against uncached CUDA output.
+Local validation: the build and test-moe-cache --cached-fusion-only passed.
+The canonical 2026-09-22T210839Z run still OOMed after 57344 tokens; its
+backtrace includes the recursive tiled MMID call. The fix alone is insufficient.
+Backend INFO messages map to TRACE and are hidden at verbosity 3. The workbench
+suite now uses verbosity 4; absence of the old INFO line did not prove bypass.
+
 A later target attempt progressed past the scheduler-allocation failure and
 surfaced a CUDA VMM transient-pool allocation failure at cuMemCreate(). Treat
 cuMemCreate/cudaMalloc as the point where physical VRAM exhaustion becomes

@@ -358,13 +358,13 @@ void test_cached_mmid_prefill_and_overflow() {
 
     for (ggml_type type : {GGML_TYPE_MXFP4, GGML_TYPE_NVFP4}) {
         auto cuda_fp4_overflow = build_cached_mmid_path_test_graph(
-            cuda_backend.get(), ggml_backend_cuda_moe_cached_buffer_type(), type, 128, 4, 16);
+            cuda_backend.get(), ggml_backend_cuda_moe_cached_buffer_type(), type, 128, 4, 2051);
         auto reference_fp4_overflow = build_cached_mmid_path_test_graph(
-            reference_backend.get(), ggml_backend_cuda_buffer_type(0), type, 128, 4, 16);
+            reference_backend.get(), ggml_backend_cuda_buffer_type(0), type, 128, 4, 2051);
         initialize_cached_mmid_path_test_graphs(cuda_fp4_overflow, reference_fp4_overflow);
         static constexpr int32_t expert_order[] = {5, 2, 7, 1, 6, 0, 4, 3};
-        std::vector<int32_t> overflow_ids(4 * 16);
-        for (int32_t token = 0; token < 16; ++token) {
+        std::vector<int32_t> overflow_ids(4 * 2051);
+        for (int32_t token = 0; token < 2051; ++token) {
             for (int32_t route = 0; route < 4; ++route) {
                 overflow_ids[token * 4 + route] = expert_order[(token + route) % 8];
             }

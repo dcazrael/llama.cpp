@@ -2016,8 +2016,8 @@ static bool ggml_cuda_mul_mat_id_impl(
             host_route->data != nullptr) {
         static std::once_flag moe_prefill_tile_log_once;
         std::call_once(moe_prefill_tile_log_once, [&]() {
-            GGML_LOG_INFO("moe-cache: tiling host-routed prefill MMID tokens=%" PRId64 " tile=%" PRId64 "\n",
-                    ne12, moe_prefill_tile_tokens);
+            GGML_LOG_INFO("moe-cache: tiling host-routed prefill MMID tokens=%" PRId64 " tile=%" PRId64 " src1=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "] ids=[%" PRId64 ",%" PRId64 "] dst=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "] mapped=%d\n",
+                    ne12, moe_prefill_tile_tokens, ne10, ne11, ne12, ne13, ids->ne[0], ids->ne[1], ne0, ne1, ne2, ne3, host_route->expert_map != nullptr);
         });
 
         for (int64_t token0 = 0; token0 < ne12; token0 += moe_prefill_tile_tokens) {
@@ -3084,8 +3084,11 @@ static void ggml_cuda_mul_mat_id_staged(ggml_backend_cuda_context & ctx, ggml_te
         ggml_tensor * orig_ids = dst->src[2];
         dst->src[0] = &src0_synth;
         dst->src[2] = &ids_synth;
+        const ggml_cuda_mul_mat_id_host_route host_route = {
+            reinterpret_cast<const char *>(remapped_ids_host.data()), ids_synth.nb[0], ids_synth.nb[1], nullptr,
+        };
         const bool dispatched = ggml_cuda_mul_mat_id_impl(
-            ctx, dst, use_mmq, nullptr,
+            ctx, dst, use_mmq, &host_route,
             compact_mmvq ? GGML_CUDA_MMID_CONSUMER_MMVQ :
                 compact_mmq ? GGML_CUDA_MMID_CONSUMER_MMQ : GGML_CUDA_MMID_CONSUMER_UNSUPPORTED);
         dst->src[0] = orig_src0;
