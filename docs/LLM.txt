@@ -66,6 +66,22 @@ block-granular selection:
 Relevant design/history:
   docs/decisions/2026-09-17-qsa-indexer-chunking.md
 
+BLOCK-FIRST INPUT ALLOCATION GOTCHA
+----------------------------------
+After block-granular top-k was introduced, the normal block-bias path no longer
+consumed the n_kv-wide cell_blk input. Creating it anyway left the tensor with
+no backend buffer; set_input_qsa then called ggml_backend_buffer_is_host() on
+that null buffer and failed at ggml-backend.cpp:205.
+
+Current invariant:
+- cell_blk exists only for the fallback token-level selection path.
+- cell_pos exists only when the device-causal chunk path consumes it.
+- set_input_qsa must tolerate both pointers being null and derive n_kv from the
+  indexer cache rather than from cell_blk.
+- never create graph inputs "just in case": unconsumed inputs may have no
+  backend buffer.
+
+
 NATIVE Q4 FLASH-ATTENTION PATH
 ------------------------------
 The MMA flash-attention path supports direct q4_0 K/V tile loading so q4_0 KV
