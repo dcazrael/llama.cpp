@@ -273,3 +273,30 @@ owns a `llama_kv_cache_context`, obtains the active width with
 This is a plumbing fix only. It does not revert or weaken native q4 Flash
 Attention, block-first QSA selection, chunked QSA prefill, or sparse Flash
 Attention.
+
+
+## Phase-aware prefill residency follow-up (2026-09-22)
+
+The first successful ISTA GSQ-RCO IQ3_XXS 128K/ub8192 run processed 16384
+prompt tokens at about 484 -> 462 tok/s, then failed before the third chunk
+while trying to reserve a 5907.82 MiB shared CUDA1 compute workspace.
+
+Two independent sources of avoidable pressure were present:
+
+1. live-context workspace growth rounded the required ~24576 KV cells to a
+   32768-cell reserve graph, even though reservation is revisited each prompt
+   chunk;
+2. the configured 48-slot MoE cache was aggressively filling during prefill
+   (36.63% L1 hit rate, 13277 misses, ~7.3 GiB demand H2D traffic) while the
+   prefill workspace needed its largest arena.
+
+The branch now uses 1024-cell live-KV reserve alignment instead of power-of-two
+growth. With phase-aware workspace enabled, the backend candidate snapshot is
+also capped to 16 slots during prefill. Candidate replacement already retires
+and frees grouped/legacy CUDA cache resources, so phase changes provide real
+VRAM headroom. The model configuration remains cache48; decode restores the
+configured slot count after the prompt workspace contracts.
+
+This does not change the outer ubatch, native-q4 FA, block-first QSA selection,
+or sparse FA. The residual [n_kv, n_chunk] F16 sparse-attention mask remains a
+separate deeper optimization if this headroom is still insufficient.
