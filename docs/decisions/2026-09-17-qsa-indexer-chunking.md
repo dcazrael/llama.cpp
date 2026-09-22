@@ -259,3 +259,17 @@ The graph-input contract is now explicit:
 
 This keeps the block-first path free of unused n_kv-wide inputs and avoids
 backend-buffer assertions during graph execution.
+
+
+## Cache-width API correction (2026-09-22)
+
+The first null-buffer fix accidentally called `llama_kv_cache::get_n_kv()`
+without the required slot-info argument and therefore did not compile. The
+correct layering matches the upstream QSA branch: the hybrid indexer context
+owns a `llama_kv_cache_context`, obtains the active width with
+`get_idx()->get_n_kv()`, and forwards that width explicitly to the lower-level
+`llama_memory_hybrid_idx::set_input_qsa()` helper.
+
+This is a plumbing fix only. It does not revert or weaken native q4 Flash
+Attention, block-first QSA selection, chunked QSA prefill, or sparse Flash
+Attention.
