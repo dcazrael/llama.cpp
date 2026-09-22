@@ -82,7 +82,7 @@ llama_memory_placement_options placement,
 
     // block-compressed sparse attention (qwen4exp QSA) over the cells of the indexer cache.
     // Blocks cut the position line, not the cell array, so no caller assumes a contiguous layout:
-    //   cell_blk  I32 [n_kv, ns]           block each cell belongs to
+    //   cell_blk  I32 [n_kv, ns]           block each cell belongs to (fallback token-level path only)
     //   blk_cells I32 [ratio*n_blocks, ns] cells making up each block
     //   blk_pos   I32 [4*n_blocks*ns]      mrope position rows of each block's first token
     //   bias      F32 [n_kv, n_tokens/ns, ns] -inf where invisible, large where always visible
