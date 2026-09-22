@@ -292,6 +292,9 @@ void llama_memory_hybrid_idx::set_input_qsa(
     GGML_ASSERT(ratio > 0);
     GGML_ASSERT(get_mem_idx() != nullptr);
 
+    GGML_ASSERT(blk_cells != nullptr && ggml_backend_buffer_is_host(blk_cells->buffer));
+    GGML_ASSERT(blk_pos   != nullptr && ggml_backend_buffer_is_host(blk_pos->buffer));
+    GGML_ASSERT(bias      != nullptr && ggml_backend_buffer_is_host(bias->buffer));
     GGML_ASSERT(cell_blk == nullptr || ggml_backend_buffer_is_host(cell_blk->buffer));
     GGML_ASSERT(cell_pos == nullptr || ggml_backend_buffer_is_host(cell_pos->buffer));
     GGML_ASSERT(extra_cells == nullptr || ggml_backend_buffer_is_host(extra_cells->buffer));
