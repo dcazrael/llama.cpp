@@ -116,6 +116,35 @@ Current mitigation:
 This is deliberately a residency/workspace change. It does not reduce outer
 ubatch and must not regress the three QSA optimization invariants above.
 
+BOUNDED MOE PREFILL EXECUTION
+-----------------------------
+A later target attempt progressed past the scheduler-allocation failure and
+surfaced a CUDA VMM transient-pool allocation failure at cuMemCreate(). Treat
+cuMemCreate/cudaMalloc as the point where physical VRAM exhaustion becomes
+visible, not as the optimization target itself.
+
+The cached MoE prefill path has token-proportional CUDA scratch:
+- MMQ activation quantization buffers scale with the MMID token count.
+- The generic MMID fallback allocates sorted input/output workspaces
+  proportional to token count.
+- Expert staging is a separate selected-expert cost and can be reused while
+  token slices execute.
+
+Current rule:
+- preserve the llama-level outer ubatch (8192 on the target),
+- for host-routed cached-expert MUL_MAT_ID with more than 2048 tokens, execute
+  the CUDA MMID operation in 2048-token views,
+- reuse the same staged expert set and route map across all token tiles,
+- write each tile directly into its corresponding destination view,
+- leave ordinary/non-cached MMID dispatch unchanged,
+- emit one "moe-cache: tiling host-routed prefill MMID ..." line when the
+  bounded path first activates.
+
+This bounds token-proportional MoE scratch without sacrificing the 8192-token
+attention/GDN graph geometry. If a later OOM still occurs, distinguish a
+selected-expert staging peak from the remaining QSA mask/indices allocation
+before changing allocator policy.
+
 BLOCK-FIRST INPUT ALLOCATION GOTCHA
 ----------------------------------
 After block-granular top-k was introduced, the normal block-bias path no longer
