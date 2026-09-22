@@ -749,8 +749,7 @@ public:
         res &= params.ubatch.n_tokens % n_stream == 0;
 
         res &= k_idxs->ne[0]    == params.ubatch.n_tokens;
-        res &= cell_blk->ne[0]  == n_kv;
-        res &= cell_blk->ne[1]  == n_stream;
+        res &= cell_blk == nullptr || (cell_blk->ne[0] == n_kv && cell_blk->ne[1] == n_stream);
         res &= blk_cells->ne[0] == (int64_t) ratio*n_blocks;
         res &= blk_pos->ne[0]   == 4*n_blocks*n_stream;
         res &= bias->ne[0]      == (blk_bias ? n_blocks : n_kv);
@@ -760,8 +759,11 @@ public:
         // the mask is rebuilt from positions only when the plain causal test covers it
         if (dev_causal) {
             res &= params.ubatch.n_seqs_unq <= 1;
+            res &= cell_pos != nullptr;
             res &= cell_pos->ne[0]  == n_kv;
             res &= cell_pos->ne[1]  == n_stream;
+        } else {
+            res &= cell_pos == nullptr;
         }
 
         return res;
@@ -840,23 +842,28 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_indexer(
         auto qsa = std::make_unique<llm_graph_input_qsa>(mctx_hyb, (uint32_t) r, blk_bias, dev_causal);
 
         qsa->k_idxs    = mctx_idx->build_input_k_idxs(ctx0, ubatch);
-        qsa->cell_blk  = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_stream);
         qsa->blk_cells = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, r*n_blocks, n_stream);
         qsa->blk_pos   = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 4*n_blocks*n_stream);
         qsa->bias      = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, blk_bias ? n_blocks : n_kv, n_tps, n_stream);
-        qsa->cell_pos  = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_stream);
 
-        ggml_set_input(qsa->cell_blk);
         ggml_set_input(qsa->blk_cells);
         ggml_set_input(qsa->blk_pos);
         ggml_set_input(qsa->bias);
-        ggml_set_input(qsa->cell_pos);
 
         if (blk_bias) {
-            // Full blocks are ranked directly; the incomplete causal tail is carried
-            // separately instead of forcing an n_kv-wide score expansion.
+            // Block-first selection never consumes the n_kv-wide cell->block map.
+            // Do not create an input tensor that the graph will leave unallocated.
             qsa->extra_cells = ggml_new_tensor_3d(ctx0, GGML_TYPE_I32, r, n_tps, n_stream);
             ggml_set_input(qsa->extra_cells);
+        } else {
+            qsa->cell_blk = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_stream);
+            ggml_set_input(qsa->cell_blk);
+        }
+
+        if (dev_causal) {
+            // Only the device-causal chunk path consumes this input.
+            qsa->cell_pos = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_stream);
+            ggml_set_input(qsa->cell_pos);
         }
 
         inp = qsa.get();
