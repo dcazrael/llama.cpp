@@ -58,7 +58,8 @@ block-granular selection:
   normal block-bias path,
 - still materializes one [n_kv, n_chunk] F16 sparse-attention mask; removing
   that mask/its mask-to-indices rescan is a separate remaining optimization,
-- routes QSA into sparse flash attention,
+- routes both chunked and normal QSA into sparse flash attention when the
+  Qwen4Exp MMA sparse shape is supported,
 - includes the later future-cell causal-selection correction,
 - preserves Generel sampled-decode support.
 
