@@ -66,6 +66,25 @@ block-granular selection:
 Relevant design/history:
   docs/decisions/2026-09-17-qsa-indexer-chunking.md
 
+QSA OPTIMIZATION INVARIANTS — DO NOT REGRESS
+-----------------------------------------
+The active 128K/ub8192 work keeps these three implementation angles together:
+
+1. Native q4_0 K/V in MMA Flash Attention. q4 KV is dequantized per MMA tile;
+   do not restore full-cache F16 staging.
+2. Block-granular QSA top-k in both normal and chunked paths. Rank compressed
+   blocks first, expand only selected blocks, and carry the incomplete causal
+   tail separately; do not restore n_kv-wide F32 score expansion/sort on the
+   normal causal path.
+3. Sparse Flash Attention on the normal QSA path as well as the chunked QSA
+   path when the Qwen4Exp MMA sparse shape is supported; do not restore the
+   dense KV scan.
+
+The next deeper memory optimization remains removal of the residual
+[n_kv, n_chunk] F16 sparse-attention mask / mask-to-indices rescan. That is a
+kernel/API change and must preserve per-query causal membership inside a shared
+query tile.
+
 BLOCK-FIRST INPUT ALLOCATION GOTCHA
 ----------------------------------
 After block-granular top-k was introduced, the normal block-bias path no longer
@@ -76,8 +95,10 @@ that null buffer and failed at ggml-backend.cpp:205.
 Current invariant:
 - cell_blk exists only for the fallback token-level selection path.
 - cell_pos exists only when the device-causal chunk path consumes it.
-- set_input_qsa must tolerate both pointers being null and derive n_kv from the
-  indexer cache rather than from cell_blk.
+- set_input_qsa must tolerate both pointers being null.
+- llama_memory_hybrid_idx_context owns the cache-width lookup via
+  get_idx()->get_n_kv() and passes n_kv explicitly to the low-level memory
+  object; do not call zero-argument get_n_kv() on llama_kv_cache itself.
 - never create graph inputs "just in case": unconsumed inputs may have no
   backend buffer.
 
