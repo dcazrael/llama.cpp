@@ -725,6 +725,7 @@ public:
             bool blk_bias, bool dev_causal) :
         mctx(mctx), ratio(ratio), blk_bias(blk_bias), dev_causal(dev_causal) {}
     virtual ~llm_graph_input_qsa() = default;
+    bool can_decode_sampled() const override { return true; }
 
     void set_input(const llama_ubatch * ubatch) override {
         mctx->get_idx()->set_input_k_idxs(k_idxs, ubatch);
