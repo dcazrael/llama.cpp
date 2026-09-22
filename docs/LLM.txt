@@ -59,6 +59,26 @@ The active implementation now uses attention-side QSA prefill chunking:
 Relevant design/history:
   docs/decisions/2026-09-17-qsa-indexer-chunking.md
 
+NATIVE Q4 FLASH-ATTENTION PATH
+------------------------------
+The MMA flash-attention path supports direct q4_0 K/V tile loading so q4_0 KV
+does not require full-cache F16 staging.
+
+Important plumbing invariant:
+- fattn_kernel_t, tile/vec/MMA kernel signatures, and launch_fattn must all carry
+  the native-KV mode flag consistently.
+- the MMA kernel must propagate q4 mode plus original byte strides through
+  flash_attn_ext_f16 -> process_tile -> iter -> load_tile.
+- host-side allocation accounting and the MMA launcher must use the same
+  need_f16_K / need_f16_V decision.
+
+A partial port previously changed the loader and shared kernel typedef without
+propagating those arguments through the MMA call chain. NVCC then failed with
+"no instance of function template flash_attn_ext_f16 matches the required
+type". It also left the launcher requesting F16 staging even though allocation
+accounting had disabled it for native q4_0. Commit b89af7c completes both
+halves. Do not reintroduce either mismatch when rebasing FA changes.
+
 CURRENT VALIDATION
 ------------------
 Canonical workbench target:
