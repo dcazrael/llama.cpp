@@ -45,13 +45,19 @@ CURRENT QSA DESIGN
 The old indexer-score-only chunking experiment proved insufficient. Shrinking
 that scratch target did not materially change the fatal deep-context workspace.
 
-The active implementation now uses attention-side QSA prefill chunking:
+The active implementation now uses attention-side QSA prefill chunking plus
+block-granular selection:
 - outer llama ubatch remains unchanged,
 - QSA internally uses adaptive 64..256-token query chunks,
 - avoids materializing the full [n_kv, ubatch] QSA attention mask for the
   normal single-stream causal path,
 - rebuilds causal visibility from cache cell positions,
-- uses device-side wide-row top-k,
+- ranks compressed blocks before expanding only the selected blocks to cache
+  cells; the incomplete causal tail is carried separately,
+- avoids the n_kv-wide F32 score expansion and n_kv-wide top-k sort on the
+  normal block-bias path,
+- still materializes one [n_kv, n_chunk] F16 sparse-attention mask; removing
+  that mask/its mask-to-indices rescan is a separate remaining optimization,
 - routes QSA into sparse flash attention,
 - includes the later future-cell causal-selection correction,
 - preserves Generel sampled-decode support.
