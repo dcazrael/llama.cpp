@@ -39,7 +39,12 @@ typedef void (* fattn_kernel_t)(
                             const int32_t nb11, const int32_t nb12, const int64_t nb13,
                             const int32_t nb21, const int32_t nb22, const int64_t nb23,
                             const int32_t ne31, const int32_t ne32, const int32_t ne33,
-                            const int32_t nb31, const int32_t nb32, const int64_t nb33);
+                            const int32_t nb31, const int32_t nb32, const int64_t nb33,
+        const int kv_q4);
+
+static inline bool ggml_cuda_fattn_kv_q4_native(const ggml_tensor * KV) {
+    return KV->type == GGML_TYPE_Q4_0 && KV->ne[0] % QK4_0 == 0;
+}
 
 typedef float (*vec_dot_KQ_t)(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds);
@@ -1267,6 +1272,11 @@ void launch_fattn(
     // TODO other tensor dimensions after removal of WMMA kernel:
     const uint3 ne01 = init_fastdiv_values(Q->ne[1]);
 
+    // bit 0: K is q4_0 read natively by the MMA tile loader
+    // bit 1: V is q4_0 read natively by the MMA tile loader
+    const int kv_q4 = ((!need_f16_K && ggml_cuda_fattn_kv_q4_native(K)) ? 1 : 0)
+                   | ((!need_f16_V && ggml_cuda_fattn_kv_q4_native(V)) ? 2 : 0);
+
     GGML_ASSERT(block_dim.x % warp_size == 0);
 
         ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num, block_dim, nbytes_shared, main_stream);
@@ -1285,7 +1295,8 @@ void launch_fattn(
         compact_causal_prefix ? -int32_t(Q->ne[1]) : (mask ? int32_t(mask->ne[1]) : 0),
         mask ? int32_t(mask->ne[2]) : 0, mask ? mask->ne[3] : 0,
         mask ? (compact_causal_prefix ? mask->nb[0] : mask->nb[1]) : 0,
-        mask ? int32_t(mask->nb[2]) : 0, mask ? mask->nb[3] : 0
+        mask ? int32_t(mask->nb[2]) : 0, mask ? mask->nb[3] : 0,
+        kv_q4
     );
     CUDA_CHECK(cudaGetLastError());
 
