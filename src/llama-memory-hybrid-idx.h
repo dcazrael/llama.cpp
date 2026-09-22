@@ -92,7 +92,7 @@ llama_memory_placement_options placement,
     // extra_cells carries the incomplete tail separately for block-level top-k
     void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
                        ggml_tensor * bias, ggml_tensor * cell_pos, ggml_tensor * extra_cells,
-                       const llama_ubatch * ubatch, uint32_t ratio, bool blk_bias) const;
+                       const llama_ubatch * ubatch, int64_t n_kv, uint32_t ratio, bool blk_bias) const;
 
 private:
     // forget seq_id (all of it if seq_id < 0) in every cache at once, so a failed restore cannot leave the caches out of step
@@ -155,7 +155,7 @@ public:
 
     void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
                        ggml_tensor * bias, ggml_tensor * cell_pos, ggml_tensor * extra_cells,
-                       const llama_ubatch * ubatch, uint32_t ratio, bool blk_bias) const;
+                       const llama_ubatch * ubatch, int64_t n_kv, uint32_t ratio, bool blk_bias) const;
 
 private:
     const llama_memory_hybrid_idx * mem = nullptr;
