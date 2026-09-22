@@ -208,3 +208,33 @@ The old LLAMA_QSA_SCRATCH_MIB score-target sweep is retired from the active
 path. If the 128K/ub8192 target still OOMs after this change, investigate the
 next device-local peak (notably quantized-K/V F16 staging in flash attention)
 rather than returning to score-scratch tuning or low-ubatch boundary mapping.
+
+
+## Block-granular top-k follow-up (2026-09-22)
+
+The chunked attention path originally still expanded every block score back to
+all `n_kv` cells and ran top-k over that `[n_kv, n_chunk]` tensor. That work
+is redundant for Qwen4Exp: a compressed block has one indexer score and the
+attention budget is defined in whole blocks, with only the incomplete causal
+tail handled separately.
+
+The branch now ports the block-selection idea from the Qwen4Exp work discussed
+in ggml-org/llama.cpp#28734:
+
+- when block bias is valid, rank `n_blocks ~= n_kv/compress_ratio` directly,
+- expand only the selected blocks through `blk_cells`,
+- carry the incomplete tail in a small `extra_cells[ratio, n_tokens]` input,
+- mark fully-future blocks as `-inf` before block selection,
+- keep the existing per-cell causal mask authoritative after selection,
+- retain the old token-level selection path for layouts where block bias is not
+  valid.
+
+This applies to both the normal QSA path and the active 64..256-token chunked
+prefill path. It removes the n_kv-wide F32 score expansion and n_kv-wide top-k
+sort from the normal causal path without changing the outer llama ubatch.
+
+This does **not** yet remove the chunk-sized `[n_kv, n_chunk]` F16 attention
+mask. Sparse Flash Attention still receives a mask and compacts it back into
+indices internally. A direct selected-index FA interface, or an equivalent
+compact gather, remains a separate optimization angle if the 128K/ub8192 target
+still lacks workspace headroom.
