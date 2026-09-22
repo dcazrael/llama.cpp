@@ -85,6 +85,34 @@ The next deeper memory optimization remains removal of the residual
 kernel/API change and must preserve per-query causal membership inside a shared
 query tile.
 
+LATEST 128K / UB8192 MEMORY EVIDENCE
+-----------------------------------
+The ISTA GSQ-RCO IQ3_XXS cache48 run on 2026-09-22 processed two 8192-token
+prompt chunks at about 484 and 462 tok/s, then failed before the third chunk
+while reserving a 5907.82 MiB shared CUDA1 compute workspace.
+
+Important observations:
+- the failure is a scheduler workspace reserve, not a kernel allocation,
+- the live-KV growth policy was rounding the required ~24576 cells to 32768,
+- CUDA1 is the display GPU and was the first device to run out of headroom,
+- prefill MoE cache telemetry showed 7675 hits / 13277 misses (36.63% hit rate)
+  with 7328 MiB of demand H2D traffic before failure,
+- the backend candidate replacement path retires grouped/legacy resources and
+  frees their CUDA slot pools when n_slots changes.
+
+Current mitigation:
+- live-context KV workspace growth uses a 1024-cell alignment instead of
+  power-of-two growth, so 24576 no longer reserves a 32768-cell graph,
+- with phase-aware workspace enabled, runtime MoE candidate snapshots are
+  capped to 16 slots during prefill,
+- the model-configured cache size remains unchanged (48 in the canonical
+  suite), and the runtime cap returns to configured size for decode,
+- changing phase marks the candidate snapshot and scheduler reservation dirty,
+  so backend resources are rebuilt only on the phase transition.
+
+This is deliberately a residency/workspace change. It does not reduce outer
+ubatch and must not regress the three QSA optimization invariants above.
+
 BLOCK-FIRST INPUT ALLOCATION GOTCHA
 ----------------------------------
 After block-granular top-k was introduced, the normal block-bias path no longer
