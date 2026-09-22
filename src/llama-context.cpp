@@ -1498,6 +1498,20 @@ void llama_context::sched_reserve(uint32_t n_tokens_req, uint32_t n_kv_req) {
     synchronize();
     refresh_moe_candidates();
 
+    // A live-KV growth reserve is about to replace a large shared scheduler
+    // backing. CUDA's transient pools can retain mapped pages from the
+    // preceding prompt chunk even after their logical allocations are freed.
+    // We are already synchronized here, so trim those idle pages before the
+    // multi-GiB replacement allocation rather than making cudaMalloc compete
+    // with stale scratch residency.
+    if (live_kv && sched_reserved_kv > 0 && n_kv > sched_reserved_kv) {
+        const uint64_t released = trim_transient_memory();
+        if (released > 0) {
+            LLAMA_LOG_INFO("%s: trimmed %.2f MiB of transient backend pools before KV workspace growth\n",
+                    __func__, released / 1024.0 / 1024.0);
+        }
+    }
+
     const int64_t t_start_us = ggml_time_us();
 
     const uint32_t n_seqs = cparams.n_seq_max;
