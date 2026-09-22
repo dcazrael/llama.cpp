@@ -367,13 +367,81 @@ static constexpr __device__ int ggml_cuda_fattn_mma_get_nstages(
 template<int stride_tile, bool swz, int nwarps, int nbatch_fa, bool use_cp_async, bool oob_check, bool use_sparse>
 static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
         const half2 * const __restrict__ KV, half2 * const __restrict__ tile_KV, const int D2, const int stride_KV,
-        const int k_VKQ_0, const int i_sup, const int32_t * const __restrict__ indices) {
+        const int k_VKQ_0, const int i_sup, const int32_t * const __restrict__ indices,
+        const bool q4, const int stride_KV_b, const int col0) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     // K/V data is loaded with decreasing granularity for D for better memory bandwidth.
     // The minimum granularity is 16 bytes.
     constexpr int h2_per_chunk = 16/sizeof(half2);
     const int chunks_per_row = D2 / h2_per_chunk;
-    if constexpr (use_cp_async) {
+
+    if (q4) {
+        // q4_0 rows: dequantize 8 elements per 16-byte shared-memory tile
+        // chunk on the fly. This avoids a full-cache F16 staging copy.
+        auto load = [&] __device__ (const int n) {
+            const int stride_k = 32 >> n;
+            const int k0_start = stride_k == 32 ? 0 : chunks_per_row - chunks_per_row % (2*stride_k);
+            const int k0_stop  =                      chunks_per_row - chunks_per_row % (1*stride_k);
+            const int stride_i = warp_size / stride_k;
+
+            if (k0_start == k0_stop) {
+                return;
+            }
+
+#pragma unroll
+            for (int i0 = 0; i0 < nbatch_fa; i0 += nwarps*stride_i) {
+                const int i = i0 + threadIdx.y*stride_i + (stride_k == warp_size ? 0 : threadIdx.x / stride_k);
+
+                if (i0 + nwarps*stride_i > nbatch_fa && i >= nbatch_fa) {
+                    break;
+                }
+
+                int64_t i_KV;
+                bool valid;
+                if constexpr (use_sparse) {
+                    const int32_t index = i < i_sup ? indices[k_VKQ_0 + i] : -1;
+                    i_KV = index >= 0 ? index : 0;
+                    valid = index >= 0;
+                } else {
+                    i_KV = k_VKQ_0 + i;
+                    valid = !oob_check || i < i_sup;
+                }
+
+#pragma unroll
+                for (int k0 = k0_start; k0 < k0_stop; k0 += stride_k) {
+                    const int k = k0 + (stride_k == warp_size ? threadIdx.x : threadIdx.x % stride_k);
+
+                    union {
+                        half2 h2[4];
+                        uint4 u4;
+                    } chunk;
+
+                    if (valid) {
+                        // k is in half2 units. Each shared-memory chunk is 8 scalar
+                        // elements and starts on an 8-element boundary, so two native
+                        // q4_0 dequant calls cover it without crossing a 32-element block.
+                        const int el = 2*(col0 + k*h2_per_chunk);
+                        const char * row = (const char *) KV + i_KV*stride_KV_b;
+                        dequantize_V_q4_0<half, 4>(row, (half *) chunk.h2,     el);
+                        dequantize_V_q4_0<half, 4>(row, (half *) chunk.h2 + 4, el + 4);
+                    } else {
+#pragma unroll
+                        for (int j = 0; j < 4; ++j) {
+                            chunk.h2[j] = __float2half2_rn(0.0f);
+                        }
+                    }
+
+                    if constexpr (swz) {
+                        *reinterpret_cast<uint4 *>((char *) tile_KV +
+                            ggml_cuda_fattn_smem_swizzle::bytes_rc<stride_tile>(i, k*h2_per_chunk)) = chunk.u4;
+                    } else {
+                        *reinterpret_cast<uint4 *>(tile_KV + i*stride_tile + k*h2_per_chunk) = chunk.u4;
+                    }
+                }
+            }
+        };
+        ggml_cuda_unroll<6>{}(load);
+    } else if constexpr (use_cp_async) {
         static_assert(warp_size == 32, "bad warp_size");
         static_assert(!oob_check || use_sparse, "OOB check not compatible with cp_async");
         constexpr int preload = 64;
@@ -400,7 +468,6 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
 
                 int64_t i_KV;
                 if constexpr (use_sparse) {
-                    // padded slots gather row 0, the -inf mask removes their contribution
                     const int32_t index = i < i_sup ? indices[k_VKQ_0 + i] : 0;
                     i_KV = index >= 0 ? index : 0;
                 } else {
@@ -413,19 +480,15 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
 
                     if constexpr (swz) {
                         const int smem_offs_b = ggml_cuda_fattn_smem_swizzle::bytes_rc<stride_tile>(i, k*h2_per_chunk);
-                        cp_async_cg_16<preload>(tile_KV_32 + smem_offs_b, KV + i_KV*stride_KV + k*h2_per_chunk);
+                        cp_async_cg_16<preload>(tile_KV_32 + smem_offs_b,
+                            KV + i_KV*stride_KV + (col0 + k*h2_per_chunk));
                     } else {
-                        cp_async_cg_16<preload>(tile_KV_32 + i*(stride_tile*sizeof(half2)) + k*16, KV + i_KV*stride_KV + k*h2_per_chunk);
+                        cp_async_cg_16<preload>(tile_KV_32 + i*(stride_tile*sizeof(half2)) + k*16,
+                            KV + i_KV*stride_KV + (col0 + k*h2_per_chunk));
                     }
                 }
             }
         };
-        // 1: max 32*16=512 bytes, 256 half
-        // 2: max 16*16=256 bytes, 128 half
-        // 3: max  8*16=128 bytes,  64 half
-        // 4: max  4*16= 64 bytes,  32 half
-        // 5: max  2*16= 32 bytes,  16 half
-        // 6: max  1*16= 16 bytes,   8 half
         ggml_cuda_unroll<6>{}(load);
     } else {
         const half2 zero[4] = {{0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}};
@@ -454,24 +517,20 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
                     const half2 * src;
                     if constexpr (use_sparse) {
                         const int32_t index = i < i_sup ? indices[k_VKQ_0 + i] : -1;
-                        src = index >= 0 ? KV + int64_t(index)*stride_KV + k*h2_per_chunk : zero;
+                        src = index >= 0 ? KV + int64_t(index)*stride_KV + (col0 + k*h2_per_chunk) : zero;
                     } else {
-                        src = !oob_check || i < i_sup ? KV + int64_t(k_VKQ_0 + i)*stride_KV + k*h2_per_chunk : zero;
+                        src = !oob_check || i < i_sup ?
+                            KV + int64_t(k_VKQ_0 + i)*stride_KV + (col0 + k*h2_per_chunk) : zero;
                     }
                     if constexpr (swz) {
-                        ggml_cuda_memcpy_1<16>((char *) tile_KV + ggml_cuda_fattn_smem_swizzle::bytes_rc<stride_tile>(i, k*h2_per_chunk), src);
+                        ggml_cuda_memcpy_1<16>((char *) tile_KV +
+                            ggml_cuda_fattn_smem_swizzle::bytes_rc<stride_tile>(i, k*h2_per_chunk), src);
                     } else {
                         ggml_cuda_memcpy_1<16>(tile_KV + i*stride_tile + k*4, src);
                     }
                 }
             }
         };
-        // 1: max 32*16=512 bytes, 256 half
-        // 2: max 16*16=256 bytes, 128 half
-        // 3: max  8*16=128 bytes,  64 half
-        // 4: max  4*16= 64 bytes,  32 half
-        // 5: max  2*16= 32 bytes,  16 half
-        // 6: max  1*16= 16 bytes,   8 half
         ggml_cuda_unroll<6>{}(load);
     }
 }
