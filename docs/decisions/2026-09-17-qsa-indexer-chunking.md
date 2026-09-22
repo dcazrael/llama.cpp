@@ -297,6 +297,11 @@ and frees grouped/legacy CUDA cache resources, so phase changes provide real
 VRAM headroom. The model configuration remains cache48; decode restores the
 configured slot count after the prompt workspace contracts.
 
+Before each growing live-KV workspace replacement, the context also trims idle
+CUDA transient-pool pages after synchronization. The CUDA backend already
+exposes this operation; doing it at the reserve boundary prevents stale scratch
+mappings from competing with the new multi-GiB scheduler backing.
+
 This does not change the outer ubatch, native-q4 FA, block-first QSA selection,
 or sparse FA. The residual [n_kv, n_chunk] F16 sparse-attention mask remains a
 separate deeper optimization if this headroom is still insufficient.
