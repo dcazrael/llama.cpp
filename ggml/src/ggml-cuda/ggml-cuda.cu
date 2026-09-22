@@ -2011,7 +2011,7 @@ static bool ggml_cuda_mul_mat_id_impl(
     // model MMID dispatch is unchanged.
     constexpr int64_t moe_prefill_tile_tokens = 2048;
     if (host_route != nullptr && ne12 > moe_prefill_tile_tokens &&
-            ne2 == ne12 && ids->type == GGML_TYPE_I32 &&
+            ne2 == ne12 && ne13 == 1 && ne3 == 1 && ids->type == GGML_TYPE_I32 &&
             ids->ne[1] == ne12 && ids->ne[2] == 1 && ids->ne[3] == 1 &&
             host_route->data != nullptr) {
         static std::once_flag moe_prefill_tile_log_once;
