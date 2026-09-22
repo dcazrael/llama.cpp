@@ -777,10 +777,11 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
         ggml_tensor * cell_pos,
         ggml_tensor * extra_cells,
         const llama_ubatch * ubatch,
-        int64_t n_kv,
         uint32_t ratio,
         bool blk_bias) const {
     GGML_ASSERT(mem != nullptr);
+    GGML_ASSERT(get_idx() != nullptr);
 
-    mem->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, cell_pos, extra_cells, ubatch, n_kv, ratio, blk_bias);
+    mem->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, cell_pos, extra_cells, ubatch,
+            get_idx()->get_n_kv(), ratio, blk_bias);
 }
