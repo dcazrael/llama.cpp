@@ -729,9 +729,14 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 
     switch (kernel) {
         case BEST_FATTN_KERNEL_TILE:
-        case BEST_FATTN_KERNEL_MMA_F16:
             need_f16_K = true;
             need_f16_V = true;
+            break;
+        case BEST_FATTN_KERNEL_MMA_F16:
+            // q4_0 is dequantized directly in the MMA tile loader, so no
+            // full-cache F16 staging copy is needed.
+            need_f16_K = !ggml_cuda_fattn_kv_q4_native(K);
+            need_f16_V = !ggml_cuda_fattn_kv_q4_native(V);
             break;
         case BEST_FATTN_KERNEL_VEC: {
             const bool f16_fallback = ggml_cuda_get_fattn_vec_case(Q->ne[0], K->type, V->type) == nullptr;
