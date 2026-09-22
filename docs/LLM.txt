@@ -1,0 +1,81 @@
+Qwen3.8 Maya Optimization Agent Reference
+
+READ THIS FIRST
+---------------
+This branch is part of a two-repo implementation/benchmark workflow with
+dcazrael/llm-workbench.
+
+The assistant/agent owns implementation work. The user runs the prepared
+benchmark command on Maya and pushes results.
+
+WORKING LOOP
+------------
+When benchmark evidence identifies a concrete bottleneck and a plausible fix:
+1. Inspect the latest pushed workbench logs/results.
+2. Implement the fix on this branch.
+3. Preserve existing Generel functionality unless the change explicitly
+   replaces it.
+4. Update architectural/bugfix documentation in this repo.
+5. Update the canonical workbench suite if the tested configuration changes.
+6. Commit both repos as needed.
+7. Tell the user when to pull and give one command to run.
+8. After the user pushes results, inspect them and implement the next concrete
+   fix if required.
+
+Do not send the user into manual implementation, branch juggling, ad-hoc build
+commands, or broad test matrices when the root cause is already established.
+Do not create disposable scripts for every hypothesis.
+
+CURRENT BRANCH
+--------------
+Branch:
+  maya/qwen38-generel-multigpu
+
+Build used by workbench:
+  /home/maya/Applications/llama.cpp-dual-gpu-opt/build-multigpu/bin/llama-server
+
+Base intent:
+- Generel multi-GPU MoE-cache stack.
+- Qwen3.8-Flash-Next / Qwen4Exp optimizations.
+- Preserve high outer ubatch at deep context.
+- Direct target: ~128K active prompt at ubatch 8192 on Maya's dual RTX 3060s.
+
+CURRENT QSA DESIGN
+------------------
+The old indexer-score-only chunking experiment proved insufficient. Shrinking
+that scratch target did not materially change the fatal deep-context workspace.
+
+The active implementation now uses attention-side QSA prefill chunking:
+- outer llama ubatch remains unchanged,
+- QSA internally uses adaptive 64..256-token query chunks,
+- avoids materializing the full [n_kv, ubatch] QSA attention mask for the
+  normal single-stream causal path,
+- rebuilds causal visibility from cache cell positions,
+- uses device-side wide-row top-k,
+- routes QSA into sparse flash attention,
+- includes the later future-cell causal-selection correction,
+- preserves Generel sampled-decode support.
+
+Relevant design/history:
+  docs/decisions/2026-09-17-qsa-indexer-chunking.md
+
+CURRENT VALIDATION
+------------------
+Canonical workbench target:
+  suites/qwen38-qsa-chunking-128k-ub8192.yaml
+
+Canonical user command from ~/llm-workbench:
+  bash tools/run-qsa-suite.sh
+
+The workbench helper updates this branch, rebuilds build-multigpu, and runs the
+canonical target. Do not create another one-off wrapper for the next hypothesis.
+
+If the target fails, inspect the new allocation owner and implement the next
+specific memory fix. Do not return to low-ubatch fallback mapping unless the
+user explicitly asks for a fallback configuration.
+
+DOCUMENTATION DISCIPLINE
+------------------------
+Every meaningful refactor, new optimization, architecture decision, or
+important bugfix/gotcha on this branch must update this file and/or the relevant
+decision doc in the same work cycle.
