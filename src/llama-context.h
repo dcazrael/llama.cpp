@@ -497,6 +497,11 @@ private:
     uint64_t graph_execution_owner_generation = 1;
     bool moe_candidate_refresh_pending = true;
 
+    // -1 uses the model-configured cache size. A non-negative value caps only
+    // the runtime candidate snapshot; model/cache allocation metadata remains
+    // unchanged. phase-aware workspace uses this to keep prefill headroom.
+    int32_t moe_candidate_slot_cap = -1;
+
     // pointers and buffer types used for the compute buffer of each backend
     std::vector<ggml_backend_t>             backend_ptrs;
     std::vector<ggml_backend_buffer_type_t> backend_buft;
