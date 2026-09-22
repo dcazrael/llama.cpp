@@ -2001,6 +2001,47 @@ static bool ggml_cuda_mul_mat_id_impl(
 
     GGML_TENSOR_BINARY_OP_LOCALS
 
+    // Keep the llama-level ubatch large for attention/GDN throughput, but
+    // bound token-proportional MoE scratch inside the CUDA backend. Cached
+    // expert paths already stage the selected expert set independently of
+    // token count; slicing here reuses that staged set while shrinking MMQ
+    // activation buffers and generic MMID sort/output temporaries.
+    //
+    // Restrict this to host-routed cached-expert execution for now. Plain
+    // model MMID dispatch is unchanged.
+    constexpr int64_t moe_prefill_tile_tokens = 2048;
+    if (host_route != nullptr && ne12 > moe_prefill_tile_tokens &&
+            ne2 == ne12 && ids->type == GGML_TYPE_I32 &&
+            ids->ne[1] == ne12 && ids->ne[2] == 1 && ids->ne[3] == 1 &&
+            host_route->data != nullptr) {
+        for (int64_t token0 = 0; token0 < ne12; token0 += moe_prefill_tile_tokens) {
+            const int64_t n_tile = std::min<int64_t>(moe_prefill_tile_tokens, ne12 - token0);
+
+            ggml_tensor src1_tile = *src1;
+            src1_tile.ne[2] = n_tile;
+            src1_tile.data = static_cast<char *>(src1->data) + token0*src1->nb[2];
+
+            ggml_tensor ids_tile = *ids;
+            ids_tile.ne[1] = n_tile;
+            ids_tile.data = static_cast<char *>(ids->data) + token0*ids->nb[1];
+
+            ggml_tensor dst_tile = *dst;
+            dst_tile.ne[2] = n_tile;
+            dst_tile.data = static_cast<char *>(dst->data) + token0*dst->nb[2];
+            dst_tile.src[1] = &src1_tile;
+            dst_tile.src[2] = &ids_tile;
+
+            auto route_tile = *host_route;
+            route_tile.data += token0*route_tile.nb1;
+
+            if (!ggml_cuda_mul_mat_id_impl(
+                    ctx, &dst_tile, use_mmq, &route_tile, required_consumer, direct_source_view)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     const bool mapped_experts = host_route != nullptr && host_route->expert_map != nullptr;
     if (direct_source_view != nullptr && (mapped_experts ||
