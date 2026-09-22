@@ -1319,11 +1319,13 @@ static uint32_t llama_workspace_kv_growth_bound(uint32_t required, uint32_t capa
     GGML_ASSERT(capacity > 0);
     required = std::max(1u, std::min(required, capacity));
 
-    uint32_t result = std::min(256u, capacity);
-    while (result < required) {
-        result = uint32_t(std::min<uint64_t>(capacity, uint64_t(result) * 2));
-    }
-    return result;
+    // Live-context reservation is already revisited at every processing chunk,
+    // so exponential growth only reserves future-context scratch prematurely.
+    // Keep a small alignment quantum for graph stability without turning
+    // 24K active KV into a 32K compute graph.
+    constexpr uint32_t quantum = 1024;
+    const uint64_t rounded = (uint64_t(required) + quantum - 1) / quantum * quantum;
+    return uint32_t(std::min<uint64_t>(capacity, rounded));
 }
 
 llama_context::sched_reserve_plan llama_context::make_sched_reserve_plan(
@@ -1444,6 +1446,25 @@ void llama_context::sched_reserve(uint32_t n_tokens_req, uint32_t n_kv_req) {
     const bool sched_resizable = (cparams.phase_aware_workspace || plan.live_kv) && !model.hparams.no_alloc;
     if (!sched_need_reserve && !sched_resizable) {
         return;
+    }
+
+    // Large-prefill compute buffers and the expert L1 cache compete for the
+    // same device memory. Keep enough slots for useful prefill locality, but
+    // reserve the full configured cache (48 on Maya) for decode after the
+    // scheduler has shrunk the prompt workspace.
+    constexpr int32_t prefill_cache_slots = 16;
+    const bool is_prefill = plan.n_tokens > plan.n_tokens_decode;
+    const int32_t desired_moe_slot_cap =
+        cparams.phase_aware_workspace && is_prefill && model.moe_expert_cache_slots() > 0 ?
+            std::min(prefill_cache_slots, model.moe_expert_cache_slots()) : -1;
+
+    if (desired_moe_slot_cap != moe_candidate_slot_cap) {
+        LLAMA_LOG_INFO("%s: MoE runtime cache slot cap %d -> %d (%s)\n",
+                __func__, moe_candidate_slot_cap, desired_moe_slot_cap,
+                desired_moe_slot_cap >= 0 ? "prefill" : "configured");
+        moe_candidate_slot_cap = desired_moe_slot_cap;
+        moe_candidate_refresh_pending = true;
+        sched_need_reserve = true;
     }
 
     prepare_sched_reserve(plan);
@@ -1674,18 +1695,26 @@ void llama_context::refresh_moe_candidates() {
         return;
     }
 
+    const auto runtime_slots = [&](int32_t configured) -> uint32_t {
+        configured = std::max(configured, 0);
+        if (moe_candidate_slot_cap >= 0) {
+            configured = std::min(configured, moe_candidate_slot_cap);
+        }
+        return static_cast<uint32_t>(configured);
+    };
+
     ggml_backend_moe_candidate_snapshot_v2 disabled = {};
     disabled.magic = GGML_BACKEND_MOE_CANDIDATE_SNAPSHOT_V2_MAGIC;
     disabled.abi_version = GGML_BACKEND_MOE_CANDIDATE_SNAPSHOT_V2_VERSION;
     disabled.struct_size = sizeof(disabled);
-    disabled.n_slots = std::max(model.moe_expert_cache_slots(), 0);
+    disabled.n_slots = runtime_slots(model.moe_expert_cache_slots());
 
     try {
         const llama_moe_candidate_snapshot candidates(model, *loras);
         for (const auto & endpoint : moe_candidate_replace_fns) {
             auto owner_candidates = candidates.get();
-            owner_candidates.n_slots = std::max(
-                model.moe_expert_cache_slots(ggml_backend_get_device(endpoint.first)), 0);
+            owner_candidates.n_slots = runtime_slots(
+                model.moe_expert_cache_slots(ggml_backend_get_device(endpoint.first)));
             const int32_t result = endpoint.second(endpoint.first, &owner_candidates);
             if (result != GGML_BACKEND_MOE_CANDIDATE_REPLACE_ACCEPTED &&
                     result != GGML_BACKEND_MOE_CANDIDATE_REPLACE_REJECTED) {
