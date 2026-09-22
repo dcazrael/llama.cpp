@@ -1137,7 +1137,11 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
     mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);
 
     if (!inp_attn->self_kq_mask_causal_prefix_n_kv) {
+        // The QSA chunked path can rebuild the causal mask from cache positions,
+    // leaving the full [n_kv, n_tokens] mask unallocated.
+    if (inp_attn->self_kq_mask && inp_attn->self_kq_mask->buffer) {
         mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);
+    }
     }
 
     if (inp_attn->self_k_rot) {
@@ -1194,7 +1198,11 @@ void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
     mctx->get_attn()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);
 
     if (!inp_attn->self_kq_mask_causal_prefix_n_kv) {
+        // The QSA chunked path can rebuild the causal mask from cache positions,
+    // leaving the full [n_kv, n_tokens] mask unallocated.
+    if (inp_attn->self_kq_mask && inp_attn->self_kq_mask->buffer) {
         mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);
+    }
     }
 
     const int64_t n_rs = mctx->get_recr()->get_n_rs();
