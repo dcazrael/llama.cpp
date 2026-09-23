@@ -1202,6 +1202,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_chunked(
     ggml_tensor * v_all = mctx_cur->get_v(ctx0, il);
 
     ggml_tensor * kq_mask = inp->get_kq_mask();
+    // Copy the block bias once before making chunk views; per-chunk host views retain separate CUDA copies.
+    ggml_tensor * bias = ggml_dup(ctx0, inp_qsa->bias);
 
     // set_rows places each chunk's output at its own token columns; every column is written
     ggml_tensor * out = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, q_cur->ne[0]*q_cur->ne[1], n_tokens);
@@ -1247,8 +1249,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_chunked(
             // one value per block, so it is cheaper to bias here than after the cells are
             // expanded. the bias is block-major, so the token-major sum needs a transpose
             summed = ggml_add(ctx0, summed, ggml_cont(ctx0, ggml_permute(ctx0,
-                            ggml_view_2d(ctx0, inp_qsa->bias, n_blk, n_c,
-                                inp_qsa->bias->nb[1], t0*inp_qsa->bias->nb[1]), 1, 0, 2, 3)));
+                            ggml_view_2d(ctx0, bias, n_blk, n_c,
+                                bias->nb[1], t0*bias->nb[1]), 1, 0, 2, 3)));
         }
 
         ggml_tensor * top_k = nullptr;
@@ -1301,8 +1303,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_chunked(
             // Fallback layouts still need token-level selection.
             ggml_tensor * expanded = ggml_cont(ctx0, ggml_permute(ctx0,
                     ggml_get_rows(ctx0, summed, inp_qsa->cell_blk), 1, 0, 2, 3));
-            expanded = ggml_add(ctx0, expanded, ggml_view_3d(ctx0, inp_qsa->bias, n_kv, n_c, 1,
-                        inp_qsa->bias->nb[1], inp_qsa->bias->nb[2], t0*inp_qsa->bias->nb[1]));
+            expanded = ggml_add(ctx0, expanded, ggml_view_3d(ctx0, bias, n_kv, n_c, 1,
+                        bias->nb[1], bias->nb[2], t0*bias->nb[1]));
             top_k = ggml_top_k(ctx0, expanded, width);
         }
 

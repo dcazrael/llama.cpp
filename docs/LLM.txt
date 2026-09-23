@@ -42,6 +42,19 @@ Base intent:
 
 CURRENT QSA DESIGN
 ------------------
+The chunked QSA graph copies its host block-bias input once before taking
+query-chunk views. Taking views of the host input first made the scheduler
+keep one CUDA copy per chunk and per QSA layer. At 32768 KV cells, a diagnostic
+reservation had 252 live 6 MiB bias copies on CUDA1. The first prefill
+reservation fell from 4629.81 MiB to 4309.81 MiB after the shared copy;
+at the step after 49152 tokens it fell from 7081.69 MiB to 4841.69 MiB.
+The diagnostic 2026-09-23T103859Z target completed 130000 prompt tokens and
+256 generated tokens at 327.97 PP tok/s and 7.16 TG tok/s. CUDA1's last
+prefill workspace was 5792.32 MiB. The temporary allocator tracing used to
+identify the repeated copies was removed from source after this run.
+The final clean 2026-09-23T105047Z run also passed at 326.81 PP tok/s and
+7.10 TG tok/s with the same 130000 prompt and 256 generated tokens.
+
 The old indexer-score-only chunking experiment proved insufficient. Shrinking
 that scratch target did not materially change the fatal deep-context workspace.
 
@@ -158,9 +171,9 @@ attention/GDN graph geometry. If a later OOM still occurs, distinguish a
 selected-expert staging peak from the remaining QSA mask/indices allocation
 before changing allocator policy.
 
-LATEST LOCAL-AGENT HANDOFF STATE
+PREVIOUS 57K OOM EVIDENCE
 --------------------------------
-Latest pushed target result:
+Previous failed target result:
   llm-workbench/llm-lab/qwen3.8-flash-next/server-suites/
   2026-09-22T203722Z-qwen38-QSA-chunking-128K-ub8192-ceiling/
 
